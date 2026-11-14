@@ -1,0 +1,44 @@
+benchmark_id: geoguessr50k_country_augmentation_v1_1
+conditions: [original, augmented]
+model: efficientnet_b0
+weights: IMAGENET1K_V1
+num_classes: 124
+input_width: 384
+input_height: 160
+optimizer: AdamW
+learning_rate: 0.0003
+weight_decay: 0.0001
+betas: [0.9, 0.999]
+eps: 0.00000001
+epochs: 20
+scheduler: linear_warmup_then_cosine
+warmup_epochs: 1
+warmup_start_factor: 0.1
+minimum_learning_rate: 0.000001
+loss: CrossEntropyLoss
+loss_reduction: mean
+label_smoothing: 0.0
+class_weights: null
+batch_size_preferred: 128
+batch_size_fallback_order: [64, 32, 16, 8, 4, 2]
+gradient_accumulation_steps: 1
+gradient_clipping: null
+precision: float32
+amp: false
+shuffle_train: true
+replacement_sampling: false
+drop_last: false
+num_workers: 4
+pin_memory: true
+persistent_workers: false
+split_seed: 42
+augmentation_seed: 314159
+training_seeds: [42, 123, 2026]
+early_stopping: false
+checkpoint_metric: val_macro_f1_evaluable
+checkpoint_mode: max
+checkpoint_tie_break: earliest_epoch
+groups:
+  many: {min_train: 100, method: none}
+  medium: {min_train: 20, max_train: 99, method: traditional, target: 100}
+  tail: {max_train: 19, method: da_fusion, multiplier: 5, maximum_target: 100}

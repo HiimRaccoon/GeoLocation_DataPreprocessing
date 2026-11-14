@@ -1,0 +1,27 @@
+augmentation_seed: 314159
+method_variant: sd15_img2img_fixed
+diffusion_model: stable-diffusion-v1-5/stable-diffusion-v1-5
+pipeline: StableDiffusionImg2ImgPipeline
+scheduler: DDIMScheduler
+scheduler_source: diffusion_model_scheduler_config
+eta: 0.0
+strength: 0.35
+guidance_scale: 5.0
+num_inference_steps: 40
+num_images_per_prompt: 1
+generation_batch_size: 1
+generation_canvas_width: 384
+generation_canvas_height: 160
+precision: float32
+attention_backend: standard
+xformers: false
+textual_inversion: false
+lora: false
+diffusion_finetuning: false
+output_format: jpeg
+output_quality: 95
+output_subsampling: 0
+attempt_cap_multiplier: 10
+qc: {grayscale_std_min: 5.0, saturation_fraction_max: 0.98, near_black_max: 2, near_white_min: 253, blur_min: 5.0, blur_source_ratio: 0.5}
+prompt: 'A realistic street-level road photograph in {class_name}, Google Street View style, preserve the original road layout, traffic side, lane markings, existing signs and visible writing, buildings, utility poles, vegetation and vehicle configuration, natural lighting, subtle realistic variation.'
+negative_prompt: 'illustration, painting, cartoon, flipped road, reversed traffic, altered writing, invented road signs, distorted geometry, impossible objects, deformed vehicles, duplicated objects, severe blur, compression blocks, artificial textures, new watermark'

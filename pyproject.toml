@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "geoguessr-benchmark"
+version = "0.1.0"
+description = "Reproducible GeoGuessr-50k country augmentation benchmark"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24", "Pillow>=9", "PyYAML>=6", "torch>=2", "torchvision>=0.15",
+  "diffusers>=0.27", "transformers>=4", "accelerate>=0.27", "safetensors>=0.4",
+  "huggingface-hub>=0.20"
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+geoguessr-benchmark = "geoguessr_benchmark.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
