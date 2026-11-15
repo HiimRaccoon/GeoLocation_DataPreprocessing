@@ -57,7 +57,7 @@ def test_freeze_checks_dino_membership_then_publishes_union(tmp_path, monkeypatc
     atomic_write_bytes(candidates_path,canonical_jsonl_bytes(candidates))
     lock["artifacts"]["augmentation/manifests/candidates.jsonl"]=sha256_file(candidates_path)
     lock["model_snapshot"]={"sd_revision":"a"*40}
-    lock["diffusion_probe"]={"weights_sha256":"b"*64,"scheduler_config":{"x":1}}
+    lock["diffusion_probe"]={"weights_sha256":"b"*64,"scheduler_config":{"x":1},"actual_timesteps":[9,8]}
     lock["artifacts"]["augmentation/manifests/reviews.jsonl"] = sha256_file(tmp_path/"augmentation/manifests/reviews.jsonl")
     lock.update({"stage":"membership","membership_sha256":membership_sha256(candidates)})
     atomic_write_bytes(tmp_path/"benchmark_lock.json",canonical_json_bytes(lock))
@@ -137,7 +137,7 @@ def test_augment_resume_from_offline_review_to_membership(tmp_path, monkeypatch)
     for path in _REQUIRED["preflight"]:
         if not (tmp_path/path).exists(): atomic_write_bytes(tmp_path/path,b"fixture")
         lock["artifacts"][path]=sha256_file(tmp_path/path)
-    lock.update({"stage":"preflight","model_snapshot":{"sd_revision":"a"*40},"diffusion_probe":{"weights_sha256":"b"*64,"scheduler_config":{"x":1}}})
+    lock.update({"stage":"preflight","model_snapshot":{"sd_revision":"a"*40},"diffusion_probe":{"weights_sha256":"b"*64,"scheduler_config":{"x":1},"actual_timesteps":[9,8]}})
     atomic_write_bytes(tmp_path/"benchmark_lock.json",canonical_json_bytes(lock))
     monkeypatch.setattr(workflow,"load_config",lambda root:{"benchmark":{},"traditional":{},"da_fusion":DIFF_CONFIG})
     monkeypatch.setattr(config_module,"load_config",lambda root:{"benchmark":{},"traditional":{},"da_fusion":DIFF_CONFIG})

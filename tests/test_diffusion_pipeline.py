@@ -4,7 +4,8 @@ from geoguessr_benchmark.augmentation.diffusion import generate_diffusion
 
 
 class StubPipeline:
-    scheduler = type("Scheduler", (), {"config":{"num_train_timesteps":1000}})()
+    scheduler = type("Scheduler", (), {"config":{"num_train_timesteps":1000,
+        "_use_default_values":["thresholding", "prediction_type"], "trained_betas":(.01, .02)}})()
     def __call__(self, **kwargs):
         assert kwargs["image"].size == (384,160)
         assert kwargs["strength"] == .35 and kwargs["guidance_scale"] == 5.0
@@ -31,6 +32,9 @@ def test_diffusion_records_actual_steps_and_crops_before_saving():
     assert metadata["safety_flag"] is False
     assert metadata["weights_sha256"] == "b"*64
     assert metadata["scheduler_config"]["num_train_timesteps"] == 1000
+    assert metadata["scheduler_config"]["_use_default_values"] == ["prediction_type", "thresholding"]
+    assert metadata["scheduler_config"]["trained_betas"] == [.01, .02]
+    assert snapshot["pipeline"].scheduler.config["_use_default_values"] == ["thresholding", "prediction_type"]
 
 
 def test_pinned_pipeline_uses_local_files_ddim_and_standard_attention(tmp_path, monkeypatch):

@@ -10,6 +10,7 @@ from .artifacts import BENCHMARK_ID, atomic_write_bytes, canonical_csv_bytes, ca
 
 SPLIT_FIELDS = ["image_id", "filepath", "class_name", "class_id", "split", "sha256", "decoded_pixel_sha256", "is_synthetic"]
 GROUP_FIELDS = ["class_id", "class_name", "original_train_count", "group", "target", "required_accepted", "accepted_actual"]
+EXACT_HASH_FIELDS = ("sha256", "decoded_pixel_sha256")
 
 
 def allocate_split(n):
@@ -39,6 +40,93 @@ def group_for_count(n):
 def _read_csv(path):
     with path.open(encoding="utf-8", newline="") as file:
         return list(csv.DictReader(file))
+
+
+def _duplicate_groups(ordered):
+    """Connect rows sharing either exact hash, keeping the original rank of each member."""
+    parents = list(range(len(ordered)))
+    first = {}
+
+    def representative(index):
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    for index, row in enumerate(ordered):
+        for key in EXACT_HASH_FIELDS:
+            other = first.setdefault((key, row[key]), index)
+            parents[representative(index)] = representative(other)
+    groups = defaultdict(list)
+    for index in range(len(ordered)):
+        groups[representative(index)].append(index)
+    return groups.values()
+
+
+def _place_duplicate_groups(groups, original, allocation):
+    """Find a quota-compatible placement, trying the original assignments first."""
+    preferences = []
+    for members in groups:
+        votes = Counter(original[index] for index in members)
+        preferences.append(sorted(range(len(allocation)), key=lambda split: (-votes[split], split)))
+
+    # Search whole-group placements only. Singletons can fill any remaining slots.
+    # Use an explicit stack for classes with many duplicate groups and skip failed states.
+    failed = set()
+    placement = []
+    stack = [(allocation, iter(preferences[0]))]
+    while stack:
+        index = len(placement)
+        remaining, choices = stack[-1]
+        size = len(groups[index])
+        for split in choices:
+            if size > remaining[split]:
+                continue
+            after = tuple(capacity - (size if slot == split else 0) for slot, capacity in enumerate(remaining))
+            next_index = index + 1
+            if next_index == len(groups):
+                return placement + [split]
+            if len(groups[next_index]) <= max(after) and (next_index, after) not in failed:
+                placement.append(split)
+                stack.append((after, iter(preferences[next_index])))
+                break
+        else:
+            failed.add((index, remaining))
+            stack.pop()
+            if placement:
+                placement.pop()
+    raise ValueError(f"cannot place exact duplicate groups within split quotas: {allocation}")
+
+
+def _class_split_assignments(ordered, allocation):
+    original = [split for split, size in enumerate(allocation) for _ in range(size)]
+    components = _duplicate_groups(ordered)
+    duplicates = [members for members in components if len(members) > 1]
+    if all(original[members[0]] == original[members[-1]] for members in duplicates):
+        return original
+
+    duplicates.sort(key=lambda members: (-len(members), members[0]))
+    placement = _place_duplicate_groups(duplicates, original, allocation)
+    assignments = [None] * len(ordered)
+    remaining = list(allocation)
+    for members, split in zip(duplicates, placement):
+        for index in members:
+            assignments[index] = split
+        remaining[split] -= len(members)
+
+    displaced = []
+    for index, preferred in enumerate(original):
+        if assignments[index] is not None:
+            continue
+        if remaining[preferred]:
+            assignments[index] = preferred
+            remaining[preferred] -= 1
+        else:
+            displaced.append(index)
+    slots = (split for split, size in enumerate(remaining) for _ in range(size))
+    for index, split in zip(displaced, slots):
+        assignments[index] = split
+    return assignments
 
 
 def _geographic_audit(root, splits):
@@ -120,6 +208,7 @@ def build_split(root):
     if actual_classes != set(mapping) or actual_paths != {row["filepath"] for row in rows}:
         raise ValueError("dataset membership changed since inventory")
     by_class = defaultdict(list)
+    hash_classes = {}
     for row in rows:
         name, path = row["class_name"], row["filepath"]
         expected_id = hashlib.sha256(path.encode("utf-8")).hexdigest()
@@ -128,10 +217,14 @@ def build_split(root):
             raise ValueError(f"inventory file changed: {path}")
         if mapping.get(name) != int(row["class_id"]) or row["image_id"] != expected_id or row["readable"] != "true":
             raise ValueError(f"invalid inventory row: {path}")
+        for key in EXACT_HASH_FIELDS:
+            if hash_classes.setdefault((key, row[key]), name) != name:
+                raise ValueError(f"exact duplicate images have conflicting labels: {path}")
         by_class[name].append(row)
     if set(by_class) != set(mapping) or len({r["filepath"] for r in rows}) != len(rows):
         raise ValueError("inventory mapping or paths invalid")
     splits = {"train": [], "val": [], "test": []}
+    split_names = tuple(splits)
     groups, class_counts = [], {}
     for name, class_id in sorted(mapping.items(), key=lambda pair: pair[1]):
         ordered = sorted(by_class[name], key=lambda r: (hashlib.sha256(("split-v1|42|" + r["filepath"]).encode("utf-8")).digest(), r["filepath"]))
@@ -140,13 +233,11 @@ def build_split(root):
         groups.append({"class_id": class_id, "class_name": name, "original_train_count": allocation[0], "group": group,
                        "target": target, "required_accepted": budget, "accepted_actual": 0})
         class_counts[str(class_id)] = dict(zip(("train", "val", "test"), allocation))
-        offset = 0
-        for split, size in zip(splits, allocation):
-            for row in ordered[offset:offset+size]:
-                splits[split].append({key: (split if key == "split" else False if key == "is_synthetic" else row[key]) for key in SPLIT_FIELDS})
-            offset += size
+        for row, index in zip(ordered, _class_split_assignments(ordered, allocation)):
+            split = split_names[index]
+            splits[split].append({key: (split if key == "split" else False if key == "is_synthetic" else row[key]) for key in SPLIT_FIELDS})
     collisions = []
-    for key in ("image_id", "sha256", "decoded_pixel_sha256"):
+    for key in ("image_id", *EXACT_HASH_FIELDS):
         seen = defaultdict(set)
         for split, values in splits.items():
             for row in values:

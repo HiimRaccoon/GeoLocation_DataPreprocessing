@@ -1,8 +1,33 @@
 """Stable Diffusion canvas preparation and content-only output geometry."""
+from collections.abc import Mapping
+
 import numpy as np
 from PIL import Image
 
 from ..images import letterbox_geometry
+
+
+def canonical_scheduler_config(config):
+    """Copy scheduler metadata in JSON form, sorting only unordered default names."""
+    if not isinstance(config, Mapping):
+        raise TypeError("scheduler config must be a mapping")
+
+    def normalize(value):
+        if isinstance(value, Mapping):
+            normalized = {}
+            for key, item in value.items():
+                if key == "_use_default_values":
+                    if not isinstance(item, (list, tuple)) or any(not isinstance(name, str) for name in item):
+                        raise ValueError("scheduler _use_default_values must be a sequence of names")
+                    normalized[key] = sorted(item)
+                else:
+                    normalized[key] = normalize(item)
+            return normalized
+        if isinstance(value, (list, tuple)):
+            return [normalize(item) for item in value]
+        return value
+
+    return normalize(config)
 
 
 def prepare_generation_canvas(rgb):
@@ -65,7 +90,7 @@ def generate_diffusion(source, attempt, config, snapshot):
         raise ValueError("snapshot does not identify FP32 UNet weight files")
     weight_hashes = {entry["path"]:entry["sha256"] for entry in sorted(weights, key=lambda item:item["path"])}
     weights_sha256 = next(iter(weight_hashes.values())) if len(weight_hashes) == 1 else hashlib.sha256(canonical_json_bytes(weight_hashes)).hexdigest()
-    scheduler_config = dict(pipeline.scheduler.config)
+    scheduler_config = canonical_scheduler_config(pipeline.scheduler.config)
     metadata = {"generation_canvas_width": 384, "generation_canvas_height": 160,
                 "source_bbox": geometry["source_bbox"], "resized_source_width": geometry["width"],
                 "resized_source_height": geometry["height"], "padding_mode": "reflect",

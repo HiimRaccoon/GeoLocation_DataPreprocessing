@@ -91,19 +91,40 @@ def test_reuse_verified_qc_index_does_not_rehash_lock_per_candidate(tmp_path,mon
 
 
 def test_provenance_rejects_changed_diffusion_parameters_or_unpinned_weights():
+    from copy import deepcopy
     from geoguessr_benchmark.augmentation.qc import validate_candidate_provenance
     config={"diffusion_model":"fixed-model","prompt":"road {class_name}","negative_prompt":"negative","strength":.35,"guidance_scale":5.0,"num_inference_steps":40,"eta":0.0}
+    scheduler = {"prediction_type": "epsilon", "nested": {
+        "_use_default_values": ["thresholding", "sample_max_value"], "trained_betas": [.01, .02]}}
     lock={"artifacts":{"augmentation/da_fusion/config.yaml":"config-sha","environment.lock.txt":"env-sha"},
-          "model_snapshot":{"sd_revision":"a"*40},"diffusion_probe":{"weights_sha256":"b"*64,"scheduler_config":{"x":1}}}
+          "model_snapshot":{"sd_revision":"a"*40},"diffusion_probe":{"weights_sha256":"b"*64,
+          "scheduler_config":scheduler,"actual_timesteps":[9,8]}}
     source={"class_name":"A"}
     candidate={"augmentation_type":"da_fusion","augmentation_seed":314159,"config_sha256":"config-sha","environment_lock_sha256":"env-sha",
-               "diffusion_model":"fixed-model","model_revision":"a"*40,"weights_sha256":"b"*64,"scheduler_config":{"x":1},
+               "diffusion_model":"fixed-model","model_revision":"a"*40,"weights_sha256":"b"*64,"scheduler_config":deepcopy(scheduler),
                "prompt":"road A","negative_prompt":"negative","strength":.35,"guidance_scale":5.0,"num_inference_steps":40,
                "eta":0.0,"precision":"float32","actual_timesteps":[9,8],"safety_flag":False}
+    candidate["scheduler_config"]["nested"]["_use_default_values"].reverse()
+    before = deepcopy((candidate, lock))
     assert validate_candidate_provenance(candidate,source,config,lock)
-    for field,value in (("weights_sha256","wrong"),("strength",.4),("prompt","other"),("actual_timesteps",[])):
+    assert (candidate, lock) == before
+    for field,value in (
+        ("model_revision", "f" * 40), ("weights_sha256", "wrong"), ("strength", .4),
+        ("prompt", "other"), ("negative_prompt", "other"), ("guidance_scale", 6.0),
+        ("num_inference_steps", 39), ("eta", .1), ("precision", "float16"),
+        ("safety_flag", 0), ("config_sha256", "wrong"), ("environment_lock_sha256", "wrong"),
+        ("actual_timesteps", []), ("actual_timesteps", [8, 9]), ("actual_timesteps", [9, 7]),
+    ):
         bad=dict(candidate,**{field:value})
-        assert not validate_candidate_provenance(bad,source,config,lock)
+        assert not validate_candidate_provenance(bad,source,config,lock), field
+    for field, value in (("trained_betas", [.02, .01]), ("_use_default_values", ["thresholding"]),
+                         ("_use_default_values", [7, "thresholding"])):
+        bad = deepcopy(candidate)
+        bad["scheduler_config"]["nested"][field] = value
+        assert not validate_candidate_provenance(bad, source, config, lock), field
+    bad = deepcopy(candidate)
+    bad["scheduler_config"]["prediction_type"] = "v_prediction"
+    assert not validate_candidate_provenance(bad, source, config, lock)
 
 
 def test_provenance_validates_traditional_transform_order_and_ranges():

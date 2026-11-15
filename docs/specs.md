@@ -53,7 +53,7 @@ Trước split, triển khai phải tạo `reports/dataset_inventory.csv`: `imag
 
 Fail preflight nếu số ảnh/classes không khớp baseline, ảnh không đọc được, hoặc class mapping mâu thuẫn. Không âm thầm bỏ ảnh để tiếp tục benchmark.
 
-Kiểm tra exact duplicates bằng file hash và decoded pixel hash trước khi freeze split. Nếu bản sao nằm ở các splits khác nhau hoặc có label mâu thuẫn, dừng chuẩn bị benchmark và ghi issue; không tự xóa/reassign làm sai policy. Nếu có panorama/location metadata, audit cùng panorama/nearby captures và báo cáo rủi ro. Khi không có metadata, chỉ được khẳng định đã kiểm tra trùng ảnh; không khẳng định độc lập về địa lý.
+Kiểm tra exact duplicates bằng file hash và decoded pixel hash trước khi freeze split. Các ảnh cùng label trùng theo một trong hai hash được gom theo liên kết bắc cầu và xếp cùng split, giữ nguyên quota từng class và giữ đủ mọi ảnh gốc. Dừng chuẩn bị benchmark nếu có label mâu thuẫn, không thể xếp nguyên nhóm trong quota, hoặc audit sau khi xếp vẫn phát hiện trùng giữa các split. Nếu có panorama/location metadata, audit cùng panorama/nearby captures và báo cáo rủi ro. Khi không có metadata, chỉ được khẳng định đã kiểm tra trùng ảnh; không khẳng định độc lập về địa lý.
 
 ## 3. Split deterministic, thực hiện trước augmentation
 
@@ -70,7 +70,7 @@ Với mỗi class có `n` ảnh real:
 
 Trong đó `q = max(1, floor(0.1*n + 0.5))`. Đây là default làm tròn cố định, không sử dụng banker's rounding. Mọi class có ít nhất một train image; class `n >= 3` có đủ ba splits.
 
-Thứ tự ảnh trong từng class được xác định bằng khóa `SHA256("split-v1|42|" + filepath)`, sắp xếp tăng dần theo hash; nếu trùng khóa dùng filepath. Lấy lần lượt `train_count` ảnh đầu, tiếp theo validation, cuối cùng test. Cách này cố định qua OS và không phụ thuộc thứ tự quét filesystem hay phiên bản random library.
+Thứ tự ảnh trong từng class được xác định bằng khóa `SHA256("split-v1|42|" + filepath)`, sắp xếp tăng dần theo hash; nếu trùng khóa dùng filepath. Phân bổ ban đầu lấy lần lượt `train_count` ảnh đầu, tiếp theo validation, cuối cùng test. Nếu nhóm trùng bị chia, xếp nguyên nhóm theo thứ tự kích thước giảm dần rồi theo vị trí đầu tiên trong thứ tự hash. Ưu tiên split đang có nhiều thành viên nhất của nhóm, dùng thứ tự train/val/test để phá hòa và thử phương án tiếp theo khi hết quota. Ảnh lẻ lấp các vị trí còn lại, ưu tiên giữ split ban đầu rồi dùng thứ tự hash. Cách này cố định qua OS và không phụ thuộc thứ tự quét filesystem hay phiên bản random library.
 
 Ví dụ: `8 -> 6/1/1`, `4 -> 2/1/1`, `3 -> 1/1/1`, `2 -> 1/0/1`, `1 -> 1/0/0`.
 
@@ -283,6 +283,10 @@ config_sha256, environment_lock_sha256
 Trường diffusion bổ sung: `diffusion_model`, `model_revision`, `weights_sha256`, `prompt`, `negative_prompt`, `strength`, `guidance_scale`, `num_inference_steps`, actual timesteps, scheduler config, `generation_canvas_width=384`, `generation_canvas_height=160`, `precision=float32`, `source_bbox`, `resized_source_width`, `resized_source_height`, padding mode/offsets theo mục 7.2, `output_content_only=true`. `source_bbox` là tọa độ half-open trên canvas trước crop và bắt buộc giữ trong manifest. `synthetic_path` trỏ tới content-only JPEG; `output_width`/`output_height` bằng bbox dimensions, còn output hashes tính trên final file/pixels sau crop và JPEG decode. Không dùng generation canvas width/height thay final-file dimensions. Hai similarity fields và sibling ID chỉ là diagnostic metadata, không tham gia acceptance. Traditional ghi `null` cho DINO, reviewer fields và các trường diffusion không áp dụng; mọi sampled transform lưu trong `augmentation_parameters`.
 
 `filter_status` là `pending`, `accepted` hoặc `rejected`; chỉ `accepted=true` và `filter_status=accepted` được đưa vào `splits/train_augmented.csv`. Manifest này là union original train và accepted outputs, không lặp original record, không chứa rejected/pending. Mọi source phải có `source_split=train` và provenance một bước về real image.
+
+Preflight và generation ghi scheduler config dưới dạng JSON chuẩn hóa. Danh sách tên `_use_default_values` được sắp xếp vì thứ tự của nó không mang ý nghĩa. Mọi giá trị cấu hình và thứ tự các danh sách còn lại đều được đối chiếu với preflight. Khác biệt có ý nghĩa hoặc `actual_timesteps` sai giá trị hay thứ tự làm provenance không hợp lệ.
+
+Khi cập nhật lên bản sửa split và provenance, lưu riêng các artifact của lần chạy cũ. Nếu lock cũ đã khóa bản `docs/specs.md` trước bản sửa, chạy lại `inventory` và `split` trong thư mục chạy sạch với cùng dataset real, rồi kiểm tra `verify --stage splits`. Với bản stage `splits` đã được tạo theo đặc tả mới, có thể khôi phục nguyên bộ artifact cùng lock đã xác minh. Chạy lại GPU `preflight` để khóa checksum mã nguồn hiện tại rồi chạy `augment` từ manifest ứng viên mới.
 
 ## 10. Model và classifier preprocessing
 

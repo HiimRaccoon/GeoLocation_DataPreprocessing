@@ -5,8 +5,9 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from ..artifacts import _resolve_artifact, sha256_file, verify_stage
+from ..artifacts import _resolve_artifact, canonical_json_bytes, sha256_file, verify_stage
 from ..images import decode_rgb, letterbox_geometry, pixel_sha256
+from .diffusion import canonical_scheduler_config
 from .policy import plan_candidate
 
 
@@ -168,13 +169,17 @@ def validate_candidate_provenance(candidate, source, config, lock):
         probe = lock["diffusion_probe"]
         snapshot = lock["model_snapshot"]
         checks = {"diffusion_model":config["diffusion_model"], "model_revision":snapshot["sd_revision"],
-                  "weights_sha256":probe["weights_sha256"], "scheduler_config":probe["scheduler_config"],
+                  "weights_sha256":probe["weights_sha256"],
                   "prompt":config["prompt"].format(class_name=source["class_name"]), "negative_prompt":config["negative_prompt"],
                   "strength":config["strength"], "guidance_scale":config["guidance_scale"],
                   "num_inference_steps":config["num_inference_steps"], "eta":config["eta"], "precision":"float32"}
         steps = candidate.get("actual_timesteps")
+        candidate_scheduler = canonical_json_bytes(canonical_scheduler_config(candidate["scheduler_config"]))
+        frozen_scheduler = canonical_json_bytes(canonical_scheduler_config(probe["scheduler_config"]))
         return (all(candidate.get(key) == value for key,value in checks.items()) and
+                candidate_scheduler == frozen_scheduler and
                 isinstance(steps,list) and bool(steps) and all(type(step) is int for step in steps) and
+                steps == probe["actual_timesteps"] and
                 type(candidate.get("safety_flag")) is bool)
     except (KeyError, TypeError, ValueError):
         return False

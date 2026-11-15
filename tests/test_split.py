@@ -1,10 +1,11 @@
 import csv
+import hashlib
 import json
 
 from PIL import Image
 import pytest
 
-from geoguessr_benchmark.artifacts import verify_stage
+from geoguessr_benchmark.artifacts import canonical_csv_bytes, sha256_file, verify_stage
 from geoguessr_benchmark.inventory import build_inventory
 from geoguessr_benchmark.split import allocate_split, build_split, group_for_count
 
@@ -44,15 +45,87 @@ def test_hash_order_and_published_lock(tmp_path):
     assert verify_stage(tmp_path, "splits")["stage"] == "splits"
 
 
-def test_exact_duplicate_across_splits_blocks_lock(tmp_path):
+@pytest.mark.parametrize("holdout,pixel_only", [("d", False), ("c", True)])
+def test_duplicate_across_train_and_holdout_is_colocated(tmp_path, holdout, pixel_only):
+    snapshots = []
+    for root in (tmp_path / "first", tmp_path / "second"):
+        directory = create_images(root)
+        original = (directory / "b.jpg").read_bytes()
+        # A trailing byte changes the file digest without changing decoded pixels.
+        (directory / f"{holdout}.jpg").write_bytes(original + b"x" if pixel_only else original)
+        build_inventory(root, baseline={"images": 4, "classes": 1})
+        build_split(root)
+        files = [root / f"splits/{name}.csv" for name in ("train", "val", "test")]
+        train, val, test = map(read_csv, files)
+        assert [len(train), len(val), len(test)] == [2, 1, 1]
+        assert {row["filepath"].rsplit("/", 1)[-1] for row in train} == {"b.jpg", f"{holdout}.jpg"}
+        assert all(row["is_synthetic"] == "false" for row in train + val + test)
+        audit = json.loads((root / "reports/split_audit.json").read_text(encoding="utf-8"))
+        assert audit["cross_split_duplicates"] == []
+        assert audit["split_support"] == {"train": 1, "val": 1, "test": 1}
+        verify_stage(root, "splits")
+        snapshots.append([path.read_bytes() for path in files])
+    assert snapshots[0] == snapshots[1]
+
+
+def test_duplicate_group_larger_than_any_quota_blocks_lock(tmp_path):
     directory = create_images(tmp_path)
-    (directory / "d.jpg").write_bytes((directory / "b.jpg").read_bytes())
+    for name in ("c", "d"):
+        (directory / f"{name}.jpg").write_bytes((directory / "b.jpg").read_bytes())
     build_inventory(tmp_path, baseline={"images": 4, "classes": 1})
     with pytest.raises(ValueError, match="duplicate"):
         build_split(tmp_path)
     assert not (tmp_path / "benchmark_lock.json").exists()
-    audit = json.loads((tmp_path / "reports/split_audit.json").read_text(encoding="utf-8"))
-    assert audit["cross_split_duplicates"]
+
+
+def test_split_can_reconsider_an_earlier_duplicate_group_placement(tmp_path):
+    directory = create_images(tmp_path)
+    paths = list(directory.glob("*.jpg")) + [directory / f"image-{n}.jpg" for n in range(21)]
+    paths.sort(key=lambda path: hashlib.sha256(
+        ("split-v1|42|" + path.relative_to(tmp_path).as_posix()).encode()).digest())
+    # The first group of three prefers train, leaving one train slot. The other
+    # triple fills val, so one of the two remaining pairs would be stranded.
+    groups = [[8, 11, 14, 16, 20, 22], [0, 2, 4, 7, 9], [12, 15, 23, 24],
+              [3, 5, 6], [18, 19, 21], [1, 13], [10, 17]]
+    for color, members in enumerate(groups):
+        first = paths[members[0]]
+        Image.new("RGB", (5, 7), (color * 35, 30, 50)).save(first)
+        for index in members[1:]:
+            paths[index].write_bytes(first.read_bytes())
+    build_inventory(tmp_path, baseline={"images": 25, "classes": 1})
+    build_split(tmp_path)
+    splits = [read_csv(tmp_path / f"splits/{name}.csv") for name in ("train", "val", "test")]
+    assert [len(rows) for rows in splits] == [19, 3, 3]
+    by_name = {row["filepath"].rsplit("/", 1)[-1]: row["split"] for rows in splits for row in rows}
+    for members in groups:
+        assert len({by_name[paths[index].name] for index in members}) == 1
+
+
+def test_split_rejects_conflicting_labels_even_if_audit_omits_them(tmp_path):
+    directory = create_images(tmp_path)
+    other_class = directory.with_name("B")
+    other_class.mkdir()
+    other_file = other_class / "a.jpg"
+    Image.new("RGB", (5, 7), "blue").save(other_file)
+    build_inventory(tmp_path, baseline={"images": 5, "classes": 2})
+    inventory = tmp_path / "reports/dataset_inventory.csv"
+    rows = read_csv(inventory)
+    source = next(row for row in rows if row["filepath"].endswith("/A/a.jpg"))
+    duplicate = next(row for row in rows if row["class_name"] == "B")
+    other_file.write_bytes((directory / "a.jpg").read_bytes())
+    for key in ("sha256", "decoded_pixel_sha256"):
+        duplicate[key] = source[key]
+    inventory.write_bytes(canonical_csv_bytes(rows, list(source)))
+    with pytest.raises(ValueError, match="conflicting labels"):
+        build_inventory(tmp_path, baseline={"images": 5, "classes": 2})
+    audit_path = tmp_path / "reports/split_audit.json"
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    audit["conflicting_duplicates"] = []
+    audit["dataset_fingerprint"] = sha256_file(inventory)
+    audit_path.write_text(json.dumps(audit), encoding="utf-8")
+    with pytest.raises(ValueError, match="conflicting labels"):
+        build_split(tmp_path)
+    assert not (tmp_path / "benchmark_lock.json").exists()
 
 
 def test_inventory_does_not_overwrite_published_split_audit(tmp_path):
