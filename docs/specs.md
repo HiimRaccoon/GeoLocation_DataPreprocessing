@@ -36,7 +36,9 @@ Raw input chỉ đọc tại `data/compressed_dataset`. Trước inventory, ch�
 | 1536 × 662 | `[1253,15,1505,73]` | `[1257,448,1505,603]` |
 | 1030 × 703 | `[747,15,999,73]` | `[832,554,1000,646]` |
 
-Giữ nguyên dimensions, dùng JPEG RGB quality 95, subsampling 0, bỏ EXIF. Kích thước ngoài bảng làm cleaning thất bại. `reports/cleaning_manifest.json` ghi policy/version, benchmark ID, fill RGB, đường dẫn raw/cleaned, dimensions, bboxes và SHA-256 của file bytes và decoded RGB pixels cho cả hai bản. Inventory xác minh membership, kích thước và các hash cleaned theo manifest. Split chỉ dùng inventory của bản cleaned đó và khóa checksum manifest cùng các artifact split. Validation, test và mọi augmentation source đều xuất phát từ cleaned dataset.
+Giữ nguyên dimensions, dùng JPEG RGB quality 95, subsampling 0, bỏ EXIF. Kích thước ngoài bảng làm cleaning thất bại. `reports/cleaning_manifest.json` ghi policy/version, benchmark ID, fill RGB, đường dẫn raw/cleaned, dimensions, bboxes và SHA-256 của file bytes và decoded RGB pixels cho cả hai bản. Inventory và split đều xác minh quan hệ raw–cleaned 1:1, membership, kích thước và cả SHA-256 file lẫn decoded pixels ở hai phía. Nếu thiếu hoặc thay đổi file, dừng để kiểm tra provenance. Split khóa checksum manifest cùng các artifact split. Validation, test và mọi augmentation source đều xuất phát từ cleaned dataset.
+
+Cleaning chỉ thay representation. Thư mục cleaned được chuẩn bị ở staging; manifest chỉ được publish khi dataset đã publish đầy đủ. Nếu chỉ xuất hiện một trong hai artifact, `clean` và bước chuẩn bị dữ liệu từ chối sử dụng. Giữ output dang dở và chạy lại ở run root mới với raw đã xác minh.
 
 | Thuộc tính | Giá trị đã thống kê |
 |---|---:|
@@ -52,11 +54,11 @@ Tham chiếu inventory hiện tại: [báo cáo số lượng ảnh](../bao_cao_
 
 Trước split, triển khai phải tạo `reports/dataset_inventory.csv`: `image_id`, `filepath`, `class_name`, `class_id`, `width`, `height`, `bytes`, `sha256`, `decoded_pixel_sha256`, `readable`. Path tương đối so với project root, dấu `/`; đọc ảnh, áp EXIF orientation rồi chuyển RGB trước khi hash pixel. Hash pixel phải bao gồm width, height và RGB bytes để tránh nhập nhằng.
 
-`image_id = SHA256(filepath UTF-8)`. Tạo `class_to_idx.json` bằng cách sắp xếp tên thư mục theo Unicode code point, không phụ thuộc locale/OS; `class_id` liên tiếp từ 0 đến 123. Không xây lại class mapping trong từng DataLoader.
+`image_id = SHA256(raw_path UTF-8)`, với `raw_path` là danh tính logic từ cleaning manifest. Cột `filepath` trong inventory và các CSV split là đường dẫn JPEG cleaned dùng cho model. Tạo `class_to_idx.json` bằng cách sắp xếp tên thư mục theo Unicode code point, không phụ thuộc locale/OS; `class_id` liên tiếp từ 0 đến 123. Không xây lại class mapping trong từng DataLoader.
 
 Fail preflight nếu số ảnh/classes không khớp baseline, ảnh không đọc được, hoặc class mapping mâu thuẫn. Không âm thầm bỏ ảnh để tiếp tục benchmark.
 
-Kiểm tra exact duplicates bằng file hash và decoded pixel hash trước khi freeze split. Các ảnh cùng label trùng theo một trong hai hash được gom theo liên kết bắc cầu và xếp cùng split, giữ nguyên quota từng class và giữ đủ mọi ảnh gốc. Dừng chuẩn bị benchmark nếu có label mâu thuẫn, không thể xếp nguyên nhóm trong quota, hoặc audit sau khi xếp vẫn phát hiện trùng giữa các split. Nếu có panorama/location metadata, audit cùng panorama/nearby captures và báo cáo rủi ro. Khi không có metadata, chỉ được khẳng định đã kiểm tra trùng ảnh; không khẳng định độc lập về địa lý.
+Kiểm tra exact duplicates bằng file hash và decoded pixel hash trước khi freeze split. Các ảnh cùng label trùng theo một trong hai hash raw được gom theo liên kết bắc cầu và xếp cùng split theo đúng quy tắc v1.1, giữ nguyên quota và đủ mọi ảnh. Audit sau phân bổ vẫn kiểm tra hashes cleaned; nếu cleaning tạo thêm trùng giữa hai split đã xác định, dừng và ghi collision mà không đổi membership. Dừng chuẩn bị benchmark nếu có label mâu thuẫn, không thể xếp nguyên nhóm trong quota, hoặc audit sau khi xếp vẫn phát hiện trùng giữa các split. Nếu có panorama/location metadata, audit cùng panorama/nearby captures và báo cáo rủi ro. Khi không có metadata, chỉ được khẳng định đã kiểm tra trùng ảnh; không khẳng định độc lập về địa lý.
 
 ## 3. Split deterministic, thực hiện trước augmentation
 
@@ -73,7 +75,7 @@ Với mỗi class có `n` ảnh real:
 
 Trong đó `q = max(1, floor(0.1*n + 0.5))`. Đây là default làm tròn cố định, không sử dụng banker's rounding. Mọi class có ít nhất một train image; class `n >= 3` có đủ ba splits.
 
-Thứ tự ảnh trong từng class được xác định bằng khóa `SHA256("split-v1|42|" + filepath)`, sắp xếp tăng dần theo hash; nếu trùng khóa dùng filepath. Phân bổ ban đầu lấy lần lượt `train_count` ảnh đầu, tiếp theo validation, cuối cùng test. Nếu nhóm trùng bị chia, xếp nguyên nhóm theo thứ tự kích thước giảm dần rồi theo vị trí đầu tiên trong thứ tự hash. Ưu tiên split đang có nhiều thành viên nhất của nhóm, dùng thứ tự train/val/test để phá hòa và thử phương án tiếp theo khi hết quota. Ảnh lẻ lấp các vị trí còn lại, ưu tiên giữ split ban đầu rồi dùng thứ tự hash. Cách này cố định qua OS và không phụ thuộc thứ tự quét filesystem hay phiên bản random library.
+Thứ tự ảnh trong từng class được xác định bằng khóa `SHA256("split-v1|42|" + raw_path)`, sắp xếp tăng dần theo hash; nếu trùng khóa dùng `raw_path`. Dùng danh tính logic và các nhóm hash raw như v1.1 để thay JPEG raw bằng JPEG cleaned không xáo lại membership. Phân bổ ban đầu lấy lần lượt `train_count` ảnh đầu, tiếp theo validation, cuối cùng test. Nếu nhóm trùng bị chia, xếp nguyên nhóm theo thứ tự kích thước giảm dần rồi theo vị trí đầu tiên trong thứ tự hash. Ưu tiên split đang có nhiều thành viên nhất của nhóm, dùng thứ tự train/val/test để phá hòa và thử phương án tiếp theo khi hết quota. Ảnh lẻ lấp các vị trí còn lại, ưu tiên giữ split ban đầu rồi dùng thứ tự hash. Cách này cố định qua OS và không phụ thuộc thứ tự quét filesystem hay phiên bản random library.
 
 Ví dụ: `8 -> 6/1/1`, `4 -> 2/1/1`, `3 -> 1/1/1`, `2 -> 1/0/1`, `1 -> 1/0/0`.
 
@@ -282,7 +284,7 @@ Trường diffusion bổ sung: `diffusion_model`, `model_revision`, `weights_sha
 
 Preflight và generation ghi scheduler config dưới dạng JSON chuẩn hóa. Danh sách tên `_use_default_values` được sắp xếp vì thứ tự của nó không mang ý nghĩa. Mọi giá trị cấu hình và thứ tự các danh sách còn lại đều được đối chiếu với preflight. Khác biệt có ý nghĩa hoặc `actual_timesteps` sai giá trị hay thứ tự làm provenance không hợp lệ.
 
-V1.1 không tương thích với v1.2. Giữ khóa, manifests, review và checkpoint cũ ở run root riêng. Với v1.2, bắt đầu từ cùng raw JPEG trong run root mới, chạy `clean` → `inventory` → `split` → `verify --stage splits` → GPU `preflight` → `augment`. Tạo lại candidates, review, membership và train union theo v1.2. GPU preflight khóa lại `code_sha256`.
+V1.1 không tương thích với v1.2. Lock v1.2 từ trước bản sửa danh tính cũng cần tạo lại từ inventory/split đã sửa vì ID và membership có thể khác. Có thể dùng lại cleaning output nếu manifest, raw và cleaned đều được xác minh; giữ các split, preflight và artifact phụ thuộc cũ ở run root riêng. Giữ khóa, manifests, review và checkpoint cũ ở run root riêng. Với v1.2, bắt đầu từ cùng raw JPEG trong run root mới, chạy `clean` → `inventory` → `split` → `verify --stage splits` → GPU `preflight` → `augment`. Tạo lại candidates, review, membership và train union theo v1.2. GPU preflight khóa lại `code_sha256`.
 
 ## 10. Model và classifier preprocessing
 
@@ -470,7 +472,7 @@ project/
   benchmark_lock.json
   environment.lock.txt
   data/
-    compressed_dataset/                  # raw, chỉ đọc ở bước clean
+    compressed_dataset/                  # raw, chỉ đọc để clean và xác minh provenance
     cleaned_dataset/<class_name>/       # cleaned real JPEG cho cả ba split
     augmented_dataset/
       traditional/<class_name>/

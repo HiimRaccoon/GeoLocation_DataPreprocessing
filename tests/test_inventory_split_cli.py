@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from PIL import Image
 
 from geoguessr_benchmark import __main__
@@ -18,9 +16,18 @@ def test_cli_inventory_split_and_verify_fixture(tmp_path, monkeypatch, capsys):
     monkeypatch.setitem(HUD_BOXES, (8, 8), ((1, 1, 2, 2), (4, 4, 6, 6)))
     assert __main__.main(["--root", str(tmp_path), "inventory"]) == 1
     assert __main__.main(["--root", str(tmp_path), "clean"]) == 0
-    # Raw membership and bytes are outside inventory and split.
-    (directory / "0.jpg").write_bytes(b"unreadable raw")
+    raw = directory / "0.jpg"
+    original = raw.read_bytes()
+    raw.write_bytes(original + b"changed bytes")
+    assert __main__.main(["--root", str(tmp_path), "inventory"]) == 1
+    assert "raw SHA-256 mismatch" in capsys.readouterr().err
+    raw.write_bytes(original)
     assert __main__.main(["--root", str(tmp_path), "inventory"]) == 0
+    raw.unlink()
+    assert __main__.main(["--root", str(tmp_path), "split"]) == 1
+    assert "raw" in capsys.readouterr().err
+    assert not (tmp_path / "benchmark_lock.json").exists()
+    raw.write_bytes(original)
     assert __main__.main(["--root", str(tmp_path), "split"]) == 0
     assert __main__.main(["--root", str(tmp_path), "verify", "--stage", "splits"]) == 0
     assert (tmp_path / "reports/split_audit.json").exists()

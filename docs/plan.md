@@ -6,7 +6,7 @@
 | Nguồn yêu cầu | [docs/specs.md](specs.md), v1.2, FROZEN |
 | Danh sách thực hiện | [docs/tasks.md](tasks.md) |
 | Mục tiêu | Đo thay đổi Macro-F1 và các chỉ số phụ khi bổ sung dữ liệu offline cho minority classes, với cùng thiết lập huấn luyện trên ba seed ghép cặp và cùng validation/test thật. |
-| Hiện trạng | Repository hiện có `docs/specs.md`, `docs/plan.md`, `docs/tasks.md` và `.agents/`. Mã nguồn Python và cấu hình chạy thuộc phần triển khai. Raw JPEG tại `data/compressed_dataset/` là đầu vào chỉ đọc của `clean`; benchmark dùng `data/cleaned_dataset/`. Mọi counts bên dưới là baseline hoặc dự kiến theo spec. |
+| Hiện trạng | Repository hiện có `docs/specs.md`, `docs/plan.md`, `docs/tasks.md` và `.agents/`. Mã nguồn Python và cấu hình chạy thuộc phần triển khai. Raw JPEG tại `data/compressed_dataset/` chỉ được đọc cho cleaning và xác minh provenance; benchmark dùng `data/cleaned_dataset/`. Mọi counts bên dưới là baseline hoặc dự kiến theo spec. |
 
 ## 1. Phạm vi và tiêu chí hoàn thành
 
@@ -90,10 +90,10 @@ flowchart TD
 
 ### Inventory và chống leakage
 
-1. Chạy `clean` để ghi `data/cleaned_dataset/` và `reports/cleaning_manifest.json` theo §2. Inventory chỉ quét cleaned, giữ nguyên class/path và xác minh hash theo manifest. Tạo `splits/class_to_idx.json` theo thứ tự Unicode code point, ID 0 đến 123. Ghi `reports/dataset_inventory.csv`, `image_id = SHA256(filepath UTF-8)`, `sha256` trên bytes file và `decoded_pixel_sha256` trên oriented RGB có dimensions. Fingerprint là SHA-256 của inventory canonical sắp theo filepath, bỏ timestamps khỏi nội dung hash.
+1. Chạy `clean` để ghi `data/cleaned_dataset/` và `reports/cleaning_manifest.json` theo §2. Inventory và split xác minh mapping 1:1, membership, dimensions, file và pixel hashes của cả raw lẫn cleaned. Thư mục cleaned và manifest phải cùng tồn tại; nếu phát hiện publish dở, dừng và chạy lại ở run root mới. Tạo `splits/class_to_idx.json` theo thứ tự Unicode code point, ID 0 đến 123. Ghi `reports/dataset_inventory.csv`, `image_id = SHA256(raw_path UTF-8)` theo cleaning manifest; `filepath` luôn trỏ đến ảnh cleaned. Tính `sha256` trên bytes của JPEG cleaned và `decoded_pixel_sha256` trên oriented RGB có dimensions. Fingerprint là SHA-256 của inventory canonical sắp theo filepath, bỏ timestamps khỏi nội dung hash.
 2. Đối chiếu 49.997 JPEG, 124 classes, hai nhóm resolution 49.942 ảnh `1536×662` và 55 ảnh `1030×703`, United States 12.014 và minimum class size 1 gồm Antarctica. Ghi nhận sai lệch đối chiếu. Dừng preflight khi ảnh không đọc được, số ảnh/classes lệch hoặc mapping mâu thuẫn. Mọi ảnh gốc chỉ được đọc.
-3. Kiểm tra cả file hash và decoded-pixel hash. Duplicate có nhãn mâu thuẫn hoặc nằm khác split làm dừng freeze và được ghi trong `reports/split_audit.json`. Duplicate cùng label được gom nguyên nhóm trong cùng split, giữ quota từng lớp. Nếu không có cách xếp hợp lệ thì dừng. Khi có panorama/location metadata, audit near/same panorama và nearby captures. Nếu metadata vắng, báo giới hạn của exact-duplicate audit.
-4. Dùng `split_seed=42` và sort từng class theo `(SHA256("split-v1|42|" + filepath), filepath)`. Với `n≥10` lấy `q=max(1,floor(0.1*n+0.5))`, lần lượt `n-2q/q/q`. Với `3≤n≤9` lấy `n-2/1/1`, `n=2` lấy `1/0/1`, `n=1` lấy `1/0/0`. CSV các split theo `(class_id, filepath)`. Freeze evaluable IDs từ real support. Các bước trước final test chỉ dùng holdout cho lập split, checksum, audit leakage cơ học và metadata hỗ trợ metric.
+3. Kiểm tra cả file hash và decoded-pixel hash. Duplicate có nhãn mâu thuẫn hoặc nằm khác split làm dừng freeze và được ghi trong `reports/split_audit.json`. Nhóm duplicate theo hash raw được xếp cùng split như v1.1, giữ quota từng lớp. Nếu không xếp được hoặc audit phát hiện hash cleaned giao giữa các split đã xác định, dừng mà không đổi assignment. Khi có panorama/location metadata, audit near/same panorama và nearby captures. Nếu metadata vắng, báo giới hạn của exact-duplicate audit.
+4. Dùng `split_seed=42` và sort từng class theo `(SHA256("split-v1|42|" + raw_path), raw_path)`. Với `n≥10` lấy `q=max(1,floor(0.1*n+0.5))`, lần lượt `n-2q/q/q`. Với `3≤n≤9` lấy `n-2/1/1`, `n=2` lấy `1/0/1`, `n=1` lấy `1/0/0`. CSV các split theo `(class_id, filepath)`. Freeze evaluable IDs từ real support. Các bước trước final test chỉ dùng holdout cho lập split, checksum, audit leakage cơ học và metadata hỗ trợ metric.
 
 | Split | Real images dự kiến | Evaluable classes dự kiến |
 |---|---:|---:|

@@ -20,10 +20,24 @@ HUD_BOXES = {
 }
 
 
+def _check_cleaning_publication(root):
+    cleaned, manifest = root / CLEANED_DATASET, root / CLEANING_MANIFEST
+    dataset_present = cleaned.exists() or cleaned.is_symlink()
+    manifest_present = manifest.exists() or manifest.is_symlink()
+    if dataset_present != manifest_present:
+        present, missing = (cleaned, manifest) if dataset_present else (manifest, cleaned)
+        raise ValueError(
+            f"incomplete cleaning publication: {present.relative_to(root)} exists but "
+            f"{missing.relative_to(root)} is missing; neither artifact set is verified. "
+            "Preserve the incomplete output and rerun clean in a fresh v1.2 run root"
+        )
+
+
 def clean_dataset(root):
     root = Path(root).resolve()
     raw, cleaned = root / RAW_DATASET, root / CLEANED_DATASET
     manifest = root / CLEANING_MANIFEST
+    _check_cleaning_publication(root)
     existing = next((name for name in (
         CLEANED_DATASET, CLEANING_MANIFEST, "benchmark_lock.json", "environment.lock.txt",
         "reports/dataset_inventory.csv", "reports/split_audit.json", "splits", "data/augmented_dataset",
@@ -68,14 +82,19 @@ def clean_dataset(root):
                     "raw_sha256": hashlib.sha256(payload).hexdigest(), "raw_pixel_sha256": raw_pixels,
                     "cleaned_sha256": sha256_file(output), "cleaned_pixel_sha256": pixel_sha256(decode_rgb(output)),
                 })
+        result = {"schema_version": 1, "benchmark_id": BENCHMARK_ID, "policy": POLICY, "fill_rgb": FILL,
+                  "classes": classes, "images": sorted(entries, key=lambda entry: entry["cleaned_path"])}
+        payload = canonical_json_bytes(result)
+        # The manifest is the commit marker. An interruption between these two
+        # publications is detected by both clean and its consumers.
         destination.rename(cleaned)
-    result = {"schema_version": 1, "benchmark_id": BENCHMARK_ID, "policy": POLICY, "fill_rgb": FILL,
-              "classes": classes, "images": sorted(entries, key=lambda entry: entry["cleaned_path"])}
-    atomic_write_bytes(manifest, canonical_json_bytes(result))
+        atomic_write_bytes(manifest, payload)
     return result
 
 
 def read_cleaning_manifest(root):
+    """Read a published mapping and check its raw sources before split setup."""
+    _check_cleaning_publication(root)
     path = root / CLEANING_MANIFEST
     if not path.is_file():
         raise ValueError("cleaning manifest missing; run clean first in a v1.2 run root")
@@ -88,6 +107,7 @@ def read_cleaning_manifest(root):
             or classes != sorted(set(classes)) or not isinstance(images, list) or not images):
         raise ValueError("invalid classes or images in cleaning manifest")
     entries = {}
+    cleaned_prefix = PurePosixPath(CLEANED_DATASET).parts
     for entry in images:
         try:
             path = entry["cleaned_path"]
@@ -98,11 +118,50 @@ def read_cleaning_manifest(root):
             raw_path = entry["raw_path"]
         except (KeyError, TypeError) as error:
             raise ValueError("invalid row in cleaning manifest") from error
-        if (path in entries or len(parts) < 4 or parts[:2] != ("data", "cleaned_dataset") or parts[2] not in classes
+        if (path in entries or len(parts) < 4 or parts[:2] != cleaned_prefix or parts[2] not in classes
+                or PurePosixPath(path).as_posix() != path or ".." in parts or "\\" in path or ":" in path
                 or raw_path != (PurePosixPath(RAW_DATASET) / PurePosixPath(*parts[2:])).as_posix()
                 or boxes != expected_boxes
                 or any(not isinstance(digest, str) or len(digest) != 64
                        or any(char not in "0123456789abcdef" for char in digest) for digest in hashes)):
             raise ValueError(f"invalid cleaning provenance: {path}")
         entries[path] = entry
+    _verify_raw_provenance(root, classes, entries.values())
     return classes, entries
+
+
+def _verify_raw_provenance(root, classes, entries):
+    raw = root / RAW_DATASET
+    if not raw.is_dir():
+        raise ValueError(f"raw dataset directory missing: {RAW_DATASET}")
+    if sorted(path.name for path in raw.iterdir() if path.is_dir()) != classes:
+        raise ValueError("raw class directories differ from cleaning manifest")
+    expected = {entry["raw_path"]: entry for entry in entries}
+    paths = {
+        path.relative_to(root).as_posix(): path
+        for name in classes for path in (raw / name).rglob("*")
+        if path.is_file() and path.suffix.lower() == ".jpg"
+    }
+    if paths.keys() != expected.keys():
+        missing = sorted(expected.keys() - paths.keys())
+        extra = sorted(paths.keys() - expected.keys())
+        raise ValueError(f"raw dataset membership differs from cleaning manifest: missing {missing[:1]}, extra {extra[:1]}")
+    raw_root = raw.resolve()
+    cleaned_root = (root / CLEANED_DATASET).resolve()
+    if raw_root.is_relative_to(cleaned_root) or cleaned_root.is_relative_to(raw_root):
+        raise ValueError("raw and cleaned dataset roots must be separate")
+    for name, path in paths.items():
+        if path.resolve() != raw_root / path.relative_to(raw):
+            raise ValueError(f"raw image must resolve to its own path under {RAW_DATASET}: {name}")
+        entry = expected[name]
+        payload = path.read_bytes()
+        if hashlib.sha256(payload).hexdigest() != entry["raw_sha256"]:
+            raise ValueError(f"raw SHA-256 mismatch: {name}")
+        try:
+            image = decode_rgb(BytesIO(payload))
+        except (OSError, ValueError) as error:
+            raise ValueError(f"unreadable raw image: {name}: {error}") from error
+        if pixel_sha256(image) != entry["raw_pixel_sha256"]:
+            raise ValueError(f"raw decoded pixel SHA-256 mismatch: {name}")
+        if image.size != (entry["width"], entry["height"]):
+            raise ValueError(f"raw dimensions differ from cleaning manifest: {name}")

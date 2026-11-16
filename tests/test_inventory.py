@@ -25,7 +25,8 @@ def test_inventory_is_canonical_for_unicode_paths_and_checks_baseline(tmp_path):
     with (tmp_path / "reports/dataset_inventory.csv").open(encoding="utf-8", newline="") as file:
         rows = list(csv.DictReader(file))
     assert [r["class_id"] for r in rows] == ["0", "1"]
-    assert rows[1]["image_id"] == hashlib.sha256("data/cleaned_dataset/Việt Nam/b.jpg".encode()).hexdigest()
+    assert rows[1]["filepath"] == "data/cleaned_dataset/Việt Nam/b.jpg"
+    assert rows[1]["image_id"] == hashlib.sha256("data/compressed_dataset/Việt Nam/b.jpg".encode()).hexdigest()
     with pytest.raises(ValueError, match="baseline"):
         build_inventory(tmp_path, baseline={"images": 3, "classes": 2})
     (tmp_path / "splits/class_to_idx.json").write_text(json.dumps({"A": 1, "Việt Nam": 0}), encoding="utf-8")
@@ -62,3 +63,21 @@ def test_distinct_jpeg_bytes_with_same_pixels_detect_label_conflict(tmp_path):
         build_inventory(tmp_path,baseline={"images":2,"classes":2})
     audit=json.loads((tmp_path/"reports/split_audit.json").read_text(encoding="utf-8"))
     assert any(row["hash_type"]=="decoded_pixel_sha256" for row in audit["conflicting_duplicates"])
+
+
+@pytest.mark.parametrize("field,value,error", [
+    ("raw_pixel_sha256", "0" * 64, "raw decoded pixel SHA-256 mismatch"),
+    ("raw_path", "data/compressed_dataset/A/../../a.jpg", "invalid cleaning provenance"),
+    ("raw_path", "data/compressed_dataset/A/a.jpg", "invalid cleaning provenance"),
+])
+def test_inventory_rejects_unverified_raw_pixel_hash_or_mapping(tmp_path, field, value, error):
+    image(tmp_path / "data/cleaned_dataset/A/a.jpg", (30, 40, 60))
+    image(tmp_path / "data/cleaned_dataset/A/b.jpg", (80, 160, 90))
+    seal_cleaned_fixture(tmp_path)
+    manifest_path = tmp_path / "reports/cleaning_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["images"][1][field] = value
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match=error):
+        build_inventory(tmp_path, baseline={"images": 2, "classes": 1})
+    assert not (tmp_path / "reports/dataset_inventory.csv").exists()

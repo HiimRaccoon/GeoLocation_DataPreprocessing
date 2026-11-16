@@ -2,16 +2,19 @@
 from collections import Counter, defaultdict
 import csv
 import hashlib
+from io import BytesIO
 import json
 import math
 from pathlib import Path
 
 from .artifacts import BENCHMARK_ID, CLEANED_DATASET, CLEANING_MANIFEST, atomic_write_bytes, canonical_csv_bytes, canonical_json_bytes, resolve_cleaned_image, sha256_file
 from .cleaning import read_cleaning_manifest
+from .images import decode_rgb, pixel_sha256
 
 SPLIT_FIELDS = ["image_id", "filepath", "class_name", "class_id", "split", "sha256", "decoded_pixel_sha256", "is_synthetic"]
 GROUP_FIELDS = ["class_id", "class_name", "original_train_count", "group", "target", "required_accepted", "accepted_actual"]
 EXACT_HASH_FIELDS = ("sha256", "decoded_pixel_sha256")
+RAW_EXACT_HASH_FIELDS = ("raw_sha256", "raw_pixel_sha256")
 
 
 def allocate_split(n):
@@ -44,7 +47,7 @@ def _read_csv(path):
 
 
 def _duplicate_groups(ordered):
-    """Connect rows sharing either exact hash, keeping the original rank of each member."""
+    """Connect entries sharing either exact raw hash, keeping their original rank."""
     parents = list(range(len(ordered)))
     first = {}
 
@@ -55,7 +58,7 @@ def _duplicate_groups(ordered):
         return index
 
     for index, row in enumerate(ordered):
-        for key in EXACT_HASH_FIELDS:
+        for key in RAW_EXACT_HASH_FIELDS:
             other = first.setdefault((key, row[key]), index)
             parents[representative(index)] = representative(other)
     groups = defaultdict(list)
@@ -216,18 +219,26 @@ def build_split(root):
     hash_classes = {}
     for row in rows:
         name, path = row["class_name"], row["filepath"]
-        expected_id = hashlib.sha256(path.encode("utf-8")).hexdigest()
-        file = resolve_cleaned_image(root, path)
-        if not file.is_file() or sha256_file(file) != row["sha256"]:
-            raise ValueError(f"inventory file changed: {path}")
         entry = cleaning[path]
-        if (row["sha256"] != entry["cleaned_sha256"] or row["decoded_pixel_sha256"] != entry["cleaned_pixel_sha256"]
-                or (int(row["width"]), int(row["height"])) != (entry["width"], entry["height"])):
+        expected_id = hashlib.sha256(entry["raw_path"].encode("utf-8")).hexdigest()
+        file = resolve_cleaned_image(root, path)
+        if not file.is_file():
+            raise ValueError(f"inventory file changed: {path}")
+        payload = file.read_bytes()
+        if hashlib.sha256(payload).hexdigest() != row["sha256"] or row["sha256"] != entry["cleaned_sha256"]:
+            raise ValueError(f"inventory file changed: {path}")
+        image = decode_rgb(BytesIO(payload))
+        if (pixel_sha256(image) != row["decoded_pixel_sha256"] or row["decoded_pixel_sha256"] != entry["cleaned_pixel_sha256"]
+                or image.size != (int(row["width"]), int(row["height"]))
+                or image.size != (entry["width"], entry["height"])):
             raise ValueError(f"inventory does not match cleaning provenance: {path}")
         if mapping.get(name) != int(row["class_id"]) or row["image_id"] != expected_id or row["readable"] != "true":
             raise ValueError(f"invalid inventory row: {path}")
         for key in EXACT_HASH_FIELDS:
-            if hash_classes.setdefault((key, row[key]), name) != name:
+            if hash_classes.setdefault(("cleaned", key, row[key]), name) != name:
+                raise ValueError(f"exact duplicate images have conflicting labels: {path}")
+        for key in RAW_EXACT_HASH_FIELDS:
+            if hash_classes.setdefault(("raw", key, entry[key]), name) != name:
                 raise ValueError(f"exact duplicate images have conflicting labels: {path}")
         by_class[name].append(row)
     if set(by_class) != set(mapping) or len({r["filepath"] for r in rows}) != len(rows):
@@ -235,14 +246,22 @@ def build_split(root):
     splits = {"train": [], "val": [], "test": []}
     split_names = tuple(splits)
     groups, class_counts = [], {}
+
+    def split_key(row):
+        raw_path = cleaning[row["filepath"]]["raw_path"]
+        return hashlib.sha256(("split-v1|42|" + raw_path).encode("utf-8")).digest(), raw_path
+
     for name, class_id in sorted(mapping.items(), key=lambda pair: pair[1]):
-        ordered = sorted(by_class[name], key=lambda r: (hashlib.sha256(("split-v1|42|" + r["filepath"]).encode("utf-8")).digest(), r["filepath"]))
+        ordered = sorted(by_class[name], key=split_key)
+        # Reproduce v1.1 duplicate placement from raw hashes; audit cleaned
+        # hashes separately so a new collision cannot reshuffle the split.
+        provenance = [cleaning[row["filepath"]] for row in ordered]
         allocation = allocate_split(len(ordered))
         group, target, budget = group_for_count(allocation[0])
         groups.append({"class_id": class_id, "class_name": name, "original_train_count": allocation[0], "group": group,
                        "target": target, "required_accepted": budget, "accepted_actual": 0})
         class_counts[str(class_id)] = dict(zip(("train", "val", "test"), allocation))
-        for row, index in zip(ordered, _class_split_assignments(ordered, allocation)):
+        for row, index in zip(ordered, _class_split_assignments(provenance, allocation)):
             split = split_names[index]
             splits[split].append({key: (split if key == "split" else False if key == "is_synthetic" else row[key]) for key in SPLIT_FIELDS})
     collisions = []
@@ -269,7 +288,7 @@ def build_split(root):
         raise
     atomic_write_bytes(root / "reports/split_audit.json", canonical_json_bytes(audit))
     if collisions:
-        raise ValueError("cross-split duplicate detected")
+        raise ValueError("cross-split duplicate detected in cleaned dataset; raw split assignment was preserved")
     artifacts = {CLEANING_MANIFEST: cleaning_sha, "docs/specs.md": sha256_file(root / "docs/specs.md"),
                  "reports/dataset_inventory.csv": sha256_file(inventory_path),
                  "reports/split_audit.json": sha256_file(root / "reports/split_audit.json"),
@@ -286,7 +305,7 @@ def build_split(root):
     artifacts["splits/class_groups.csv"] = sha256_file(group_path)
     projection = canonical_csv_bytes([{k: row[k] for k in GROUP_FIELDS[:-1]} for row in groups], GROUP_FIELDS[:-1])
     immutable_hash = hashlib.sha256(projection).hexdigest()
-    metadata = {"schema_version": 1, "split_seed": 42, "ordering": "SHA256(split-v1|42|filepath), filepath",
+    metadata = {"schema_version": 1, "split_seed": 42, "ordering": "SHA256(split-v1|42|raw_path), raw_path",
                 "allocation": "n>=10: n-2q/q/q; n=3..9: n-2/1/1; n=2: 1/0/1; n=1: 1/0/0; q=floor(0.1*n+0.5)",
                 "dataset_fingerprint": audit["dataset_fingerprint"], "per_class_counts": class_counts,
                 "counts": audit["split_counts"], "evaluable_ids": {name: sorted({int(row["class_id"]) for row in values}) for name, values in splits.items()},

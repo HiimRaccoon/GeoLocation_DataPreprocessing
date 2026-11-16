@@ -6,6 +6,7 @@ from PIL import Image
 import pytest
 
 from geoguessr_benchmark.artifacts import CLEANING_MANIFEST, canonical_csv_bytes, sha256_file, verify_stage
+from geoguessr_benchmark.cleaning import clean_dataset
 from geoguessr_benchmark.inventory import build_inventory as inventory_cleaned
 from geoguessr_benchmark.split import allocate_split, build_split, group_for_count
 from cleaned_fixture import seal_cleaned_fixture
@@ -31,10 +32,10 @@ def read_csv(path):
         return list(csv.DictReader(file))
 
 
-def create_images(root):
+def create_images(root, dataset="data/cleaned_dataset"):
     (root / "docs").mkdir(parents=True, exist_ok=True)
     (root / "docs/specs.md").write_text("fixture spec", encoding="utf-8")
-    directory = root / "data/cleaned_dataset/A"
+    directory = root / dataset / "A"
     directory.mkdir(parents=True)
     for i, name in enumerate("abcd"):
         Image.new("RGB", (1030, 703), (20+i*40, 30+i*10, 50)).save(directory / f"{name}.jpg")
@@ -42,21 +43,29 @@ def create_images(root):
 
 
 def test_hash_order_and_published_lock(tmp_path):
-    create_images(tmp_path)
-    build_inventory(tmp_path, baseline={"images": 4, "classes": 1})
+    raw = create_images(tmp_path, "data/compressed_dataset")
+    baseline = {"images": 4, "classes": 1}
+    clean_dataset(tmp_path)
+    inventory_cleaned(tmp_path, baseline=baseline)
     build_split(tmp_path)
-    assert [r["filepath"].split("/")[-1] for r in read_csv(tmp_path / "splits/train.csv")] == ["a.jpg", "c.jpg"]
-    assert read_csv(tmp_path / "splits/val.csv")[0]["filepath"].endswith("/d.jpg")
-    assert read_csv(tmp_path / "splits/test.csv")[0]["filepath"].endswith("/b.jpg")
+    # Reference v1.1 order before canonical CSV sorting: b,a / d / c.
+    expected = {"train": ["a.jpg", "b.jpg"], "val": ["d.jpg"], "test": ["c.jpg"]}
+    for split, names in expected.items():
+        rows = read_csv(tmp_path / f"splits/{split}.csv")
+        assert [row["filepath"] for row in rows] == [f"data/cleaned_dataset/A/{name}" for name in names]
+        for row, name in zip(rows, names):
+            raw_id = hashlib.sha256(f"data/compressed_dataset/A/{name}".encode()).hexdigest()
+            assert row["image_id"] == raw_id
+            assert sha256_file(raw / name) != sha256_file(tmp_path / row["filepath"])
     assert verify_stage(tmp_path, "splits")["stage"] == "splits"
 
 
-@pytest.mark.parametrize("holdout,pixel_only", [("d", False), ("b", True)])
+@pytest.mark.parametrize("holdout,pixel_only", [("d", False), ("c", True)])
 def test_duplicate_across_train_and_holdout_is_colocated(tmp_path, holdout, pixel_only):
     snapshots = []
     for root in (tmp_path / "first", tmp_path / "second"):
         directory = create_images(root)
-        original = (directory / "c.jpg").read_bytes()
+        original = (directory / "b.jpg").read_bytes()
         # A trailing byte changes the file digest without changing decoded pixels.
         (directory / f"{holdout}.jpg").write_bytes(original + b"x" if pixel_only else original)
         build_inventory(root, baseline={"images": 4, "classes": 1})
@@ -64,7 +73,7 @@ def test_duplicate_across_train_and_holdout_is_colocated(tmp_path, holdout, pixe
         files = [root / f"splits/{name}.csv" for name in ("train", "val", "test")]
         train, val, test = map(read_csv, files)
         assert [len(train), len(val), len(test)] == [2, 1, 1]
-        assert {row["filepath"].rsplit("/", 1)[-1] for row in train} == {"c.jpg", f"{holdout}.jpg"}
+        assert {row["filepath"].rsplit("/", 1)[-1] for row in train} == {"b.jpg", f"{holdout}.jpg"}
         assert all(row["is_synthetic"] == "false" for row in train + val + test)
         audit = json.loads((root / "reports/split_audit.json").read_text(encoding="utf-8"))
         assert audit["cross_split_duplicates"] == []
@@ -84,11 +93,38 @@ def test_duplicate_group_larger_than_any_quota_blocks_lock(tmp_path):
     assert not (tmp_path / "benchmark_lock.json").exists()
 
 
+def test_duplicate_placement_uses_raw_hashes_even_when_cleaned_bytes_differ(tmp_path):
+    raw = create_images(tmp_path, "data/compressed_dataset")
+    create_images(tmp_path)
+    (raw / "d.jpg").write_bytes((raw / "b.jpg").read_bytes())
+    seal_cleaned_fixture(tmp_path, mirror_raw=False)
+    inventory_cleaned(tmp_path, baseline={"images": 4, "classes": 1})
+    build_split(tmp_path)
+    train = read_csv(tmp_path / "splits/train.csv")
+    assert [row["filepath"] for row in train] == [
+        "data/cleaned_dataset/A/b.jpg", "data/cleaned_dataset/A/d.jpg",
+    ]
+
+
+def test_cleaned_collision_across_raw_splits_blocks_lock_instead_of_reshuffling(tmp_path):
+    create_images(tmp_path, "data/compressed_dataset")
+    cleaned = create_images(tmp_path)
+    (cleaned / "d.jpg").write_bytes((cleaned / "b.jpg").read_bytes())
+    seal_cleaned_fixture(tmp_path, mirror_raw=False)
+    inventory_cleaned(tmp_path, baseline={"images": 4, "classes": 1})
+    with pytest.raises(ValueError, match="raw split assignment was preserved"):
+        build_split(tmp_path)
+    assert not (tmp_path / "benchmark_lock.json").exists()
+    audit = json.loads((tmp_path / "reports/split_audit.json").read_text(encoding="utf-8"))
+    assert {row["hash_type"] for row in audit["cross_split_duplicates"]} == {"sha256", "decoded_pixel_sha256"}
+    assert all(set(row["splits"]) == {"train", "val"} for row in audit["cross_split_duplicates"])
+
+
 def test_split_can_reconsider_an_earlier_duplicate_group_placement(tmp_path):
     directory = create_images(tmp_path)
     paths = list(directory.glob("*.jpg")) + [directory / f"image-{n}.jpg" for n in range(21)]
     paths.sort(key=lambda path: hashlib.sha256(
-        ("split-v1|42|" + path.relative_to(tmp_path).as_posix()).encode()).digest())
+        f"split-v1|42|data/compressed_dataset/A/{path.name}".encode()).digest())
     # The first group of three prefers train, leaving one train slot. The other
     # triple fills val, so one of the two remaining pairs would be stranded.
     groups = [[8, 11, 14, 16, 20, 22], [0, 2, 4, 7, 9], [12, 15, 23, 24],
@@ -172,7 +208,7 @@ def test_optional_geographic_metadata_reports_cross_split_nearby_and_panorama(tm
     build_inventory(tmp_path,baseline={"images":4,"classes":1})
     metadata = tmp_path / "data/location_metadata.csv"
     metadata.write_text("filepath,panorama_id,latitude,longitude\n"
-                        "data/cleaned_dataset/A/c.jpg,pano-1,10.0,106.0\n"
+                        "data/cleaned_dataset/A/b.jpg,pano-1,10.0,106.0\n"
                         "data/cleaned_dataset/A/d.jpg,pano-1,10.00001,106.0\n",encoding="utf-8")
     build_split(tmp_path)
     audit=json.loads((tmp_path/"reports/split_audit.json").read_text(encoding="utf-8"))

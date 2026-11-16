@@ -75,3 +75,29 @@ def test_clean_refuses_legacy_runtime_even_if_lock_is_missing(tmp_path, capsys):
     assert __main__.main(["--root", str(tmp_path), "clean"]) == 1
     assert "fresh v1.2 run root" in capsys.readouterr().err
     assert legacy.read_bytes() == b"legacy candidate log"
+
+
+def test_interrupted_clean_publication_is_rejected_by_clean_and_inventory(tmp_path, monkeypatch):
+    raw = tmp_path / "data/compressed_dataset/A/a.jpg"
+    raw.parent.mkdir(parents=True)
+    Image.new("RGB", (1030, 703), "blue").save(raw)
+    before = raw.read_bytes()
+    manifest = tmp_path / "reports/cleaning_manifest.json"
+    published_image = tmp_path / "data/cleaned_dataset/A/a.jpg"
+
+    def interrupt(path, _payload):
+        assert path == manifest and published_image.is_file()
+        raise OSError("interrupted before manifest publication")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(cleaning, "atomic_write_bytes", interrupt)
+        with pytest.raises(OSError, match="interrupted before manifest publication"):
+            cleaning.clean_dataset(tmp_path)
+    assert not manifest.exists()
+    published_bytes = published_image.read_bytes()
+    with pytest.raises(ValueError, match="incomplete cleaning publication"):
+        cleaning.clean_dataset(tmp_path)
+    from geoguessr_benchmark.inventory import build_inventory
+    with pytest.raises(ValueError, match="incomplete cleaning publication"):
+        build_inventory(tmp_path, baseline={"images": 1, "classes": 1})
+    assert raw.read_bytes() == before and published_image.read_bytes() == published_bytes

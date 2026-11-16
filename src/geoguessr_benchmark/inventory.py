@@ -1,6 +1,7 @@
 """Inventory and audit original images before constructing fixed splits."""
 from collections import Counter, defaultdict
 import hashlib
+from io import BytesIO
 import json
 from pathlib import Path
 
@@ -39,13 +40,17 @@ def build_inventory(root, *, baseline=None):
         for path in sorted((p for p in directory.rglob("*") if p.is_file() and p.suffix.lower() == ".jpg"), key=lambda p: p.relative_to(root).as_posix()):
             relative = path.relative_to(root).as_posix()
             discovered.add(relative)
+            if relative not in cleaning:
+                raise ValueError(f"cleaned dataset membership differs from cleaning manifest: {relative}")
             try:
                 path = resolve_cleaned_image(root, relative)
-                image = decode_rgb(path)
-                row = {"image_id": hashlib.sha256(relative.encode("utf-8")).hexdigest(),
+                payload = path.read_bytes()
+                image = decode_rgb(BytesIO(payload))
+                raw_path = cleaning[relative]["raw_path"]
+                row = {"image_id": hashlib.sha256(raw_path.encode("utf-8")).hexdigest(),
                        "filepath": relative, "class_name": name, "class_id": mapping[name],
-                       "width": image.width, "height": image.height, "bytes": path.stat().st_size,
-                       "sha256": sha256_file(path), "decoded_pixel_sha256": pixel_sha256(image), "readable": True}
+                       "width": image.width, "height": image.height, "bytes": len(payload),
+                       "sha256": hashlib.sha256(payload).hexdigest(), "decoded_pixel_sha256": pixel_sha256(image), "readable": True}
                 rows.append(row)
                 for key in by_hash:
                     by_hash[key][row[key]].append(row)
