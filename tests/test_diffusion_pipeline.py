@@ -1,32 +1,43 @@
 from PIL import Image
+import pytest
 
 from geoguessr_benchmark.augmentation.diffusion import generate_diffusion
 
 
 class StubPipeline:
+    expected_size = (1536, 664)
     scheduler = type("Scheduler", (), {"config":{"num_train_timesteps":1000,
         "_use_default_values":["thresholding", "prediction_type"], "trained_betas":(.01, .02)}})()
     def __call__(self, **kwargs):
-        assert kwargs["image"].size == (384,160)
+        assert kwargs["image"].size == self.expected_size
         assert kwargs["strength"] == .35 and kwargs["guidance_scale"] == 5.0
         assert kwargs["num_inference_steps"] == 40 and kwargs["eta"] == 0.0
         assert kwargs["negative_prompt"] == "negative"
+        assert kwargs["prompt"] == "road Country" and kwargs["num_images_per_prompt"] == 1
         callback = kwargs["callback_on_step_end"]
         callback(self, 0, 99, {})
         callback(self, 1, 77, {})
-        return type("Output", (), {"images":[Image.new("RGB",(384,160),"blue")], "nsfw_content_detected":[False]})()
+        return type("Output", (), {"images":[Image.new("RGB", self.expected_size, "blue")], "nsfw_content_detected":[False]})()
 
 
-def test_diffusion_records_actual_steps_and_crops_before_saving():
-    source = Image.new("RGB",(1536,662),"green")
+@pytest.mark.parametrize("size,canvas,bbox", [
+    ((1536, 662), (1536, 664), [0, 1, 1536, 663]),
+    ((1030, 703), (1032, 704), [1, 0, 1031, 703]),
+])
+def test_diffusion_records_actual_steps_and_crops_before_saving(size, canvas, bbox):
+    source = Image.new("RGB", size, "green")
     attempt = {"generation_seed":123, "class_name":"Country"}
     config = {"prompt":"road {class_name}", "negative_prompt":"negative", "strength":.35,
               "guidance_scale":5.0, "num_inference_steps":40, "eta":0.0}
     snapshot={"pipeline":StubPipeline(), "device":"cpu", "sd_revision":"a"*40,
               "files":{"sd_weights":[{"path":"unet/model.safetensors","sha256":"b"*64}]}}
+    snapshot["pipeline"].expected_size = canvas
     image, metadata = generate_diffusion(source, attempt, config, snapshot)
-    assert image.size == (371,160)
-    assert metadata["source_bbox"] == [6,0,377,160]
+    assert image.size == size
+    assert metadata["source_bbox"] == bbox
+    assert (metadata["generation_canvas_width"], metadata["generation_canvas_height"]) == canvas
+    assert (metadata["source_content_width"], metadata["source_content_height"]) == size
+    assert (metadata["output_width"], metadata["output_height"]) == size
     assert metadata["actual_timesteps"] == [99,77]
     assert metadata["output_content_only"] is True
     assert metadata["safety_flag"] is False
@@ -69,6 +80,8 @@ def test_pinned_pipeline_uses_local_files_ddim_and_standard_attention(tmp_path, 
     monkeypatch.setattr(diffusers.DDIMScheduler, "from_config", lambda config: ("ddim", config))
     pipe = load_pinned_diffusion(tmp_path, snapshot, device="cpu")
     assert calls["local_files_only"] is True
+    import torch
+    assert calls["torch_dtype"] == torch.float32 and pipe.safety_checker is not None
     assert calls["device"] == "cpu"
     assert isinstance(calls["attention"], attention_processor.AttnProcessor)
     assert pipe.scheduler == ("ddim", {"foo":"bar"})

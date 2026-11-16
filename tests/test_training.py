@@ -25,9 +25,9 @@ def setup_run(root, monkeypatch):
     train=[]
     val=[]
     for name, split, label in [("a","train",0),("b","train",1),("c","val",0),("d","val",1)]:
-        path=root/f"data/{name}.jpg"
+        path=root/f"data/cleaned_dataset/{label}/{name}.jpg"
         atomic_write_bytes(path,name.encode())
-        row={"image_id":name,"filepath":f"data/{name}.jpg","class_name":str(label),"class_id":label,"split":split,"sha256":sha256_file(path),"decoded_pixel_sha256":name,"is_synthetic":False}
+        row={"image_id":name,"filepath":path.relative_to(root).as_posix(),"class_name":str(label),"class_id":label,"split":split,"sha256":sha256_file(path),"decoded_pixel_sha256":name,"is_synthetic":False}
         (train if split=="train" else val).append(row)
     for name, rows in (("train",train),("val",val)):
         atomic_write_bytes(root/f"splits/{name}.csv",canonical_csv_bytes(rows,fields))
@@ -102,3 +102,24 @@ def test_training_rejects_nonfinite_logits_before_checkpoint(tmp_path,monkeypatc
     with pytest.raises(ValueError,match="non-finite"):
         training.train_run(tmp_path/"nan","original",42)
     assert not (tmp_path/"nan/runs/original/seed_42/last_checkpoint.pt").exists()
+
+
+def test_dataloader_rejects_raw_real_path_and_synthetic_holdouts(tmp_path):
+    from geoguessr_benchmark.training import _ManifestDataset
+
+    for row in ({"filepath": "data/compressed_dataset/A/a.jpg", "split": "train", "is_synthetic": "false"},
+                {"filepath": "data/augmented_dataset/da_fusion/A/a.jpg", "split": "val", "is_synthetic": "true"}):
+        with pytest.raises(ValueError, match="cleaned|synthetic"):
+            _ManifestDataset(tmp_path, [row])[0]
+
+
+def test_training_rejects_legacy_checkpoint_identity(tmp_path, monkeypatch):
+    root = tmp_path / "legacy"
+    training = setup_run(root, monkeypatch)
+    state = root / "runs/original/seed_42/last_checkpoint.pt"
+    state.parent.mkdir(parents=True)
+    torch.save({"identity": {"config_sha256": "legacy-config"}}, state)
+    before = state.read_bytes()
+    with pytest.raises(ValueError, match="resume checkpoint identity mismatch"):
+        training.train_run(root, "original", 42)
+    assert state.read_bytes() == before

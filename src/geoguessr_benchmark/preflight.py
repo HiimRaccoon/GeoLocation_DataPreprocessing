@@ -226,25 +226,45 @@ def _classifier_probe_batch(root, snapshot, config, size):
 
 def _diffusion_probe(root, snapshot, config):
     import csv
-    from .artifacts import _resolve_artifact, sha256_file
-    from .images import decode_rgb, letterbox_geometry
-    from .augmentation.diffusion import generate_diffusion, load_pinned_diffusion
+    import torch
+    from .artifacts import resolve_cleaned_image, sha256_file
+    from .images import decode_rgb
+    from .augmentation.diffusion import generate_diffusion, load_pinned_diffusion, native_generation_geometry
     with (root / "splits/train.csv").open(encoding="utf-8", newline="") as stream:
-        rows = sorted(csv.DictReader(stream), key=lambda row:row["filepath"])
+        rows = list(csv.DictReader(stream))
+    with (root / "reports/dataset_inventory.csv").open(encoding="utf-8", newline="") as stream:
+        inventory = {row["filepath"]: row for row in csv.DictReader(stream)}
     if not rows:
-        raise ValueError("preflight requires an original train source")
-    source = rows[0]
-    path = _resolve_artifact(root, source["filepath"])
-    if source["split"] != "train" or source["is_synthetic"] != "false" or sha256_file(path) != source["sha256"]:
-        raise ValueError("preflight source is not a verified train image")
+        raise ValueError("preflight requires a cleaned original train source")
+
+    def probe_order(row):
+        entry = inventory[row["filepath"]]
+        geometry = native_generation_geometry(int(entry["width"]), int(entry["height"]))
+        canvas_area = geometry["generation_canvas_width"] * geometry["generation_canvas_height"]
+        return (-canvas_area, -int(entry["width"]) * int(entry["height"]), row["filepath"])
+
+    if any(row["filepath"] not in inventory or row["split"] != "train" or row["is_synthetic"] != "false" for row in rows):
+        raise ValueError("diffusion probe requires verified cleaned train rows")
+    source = min(rows, key=probe_order)
+    path = resolve_cleaned_image(root, source["filepath"])
+    if sha256_file(path) != source["sha256"] or source["sha256"] != inventory[source["filepath"]]["sha256"]:
+        raise ValueError("diffusion probe source hash differs from inventory or train manifest")
     image = decode_rgb(path)
-    pipeline = load_pinned_diffusion(root, snapshot)
+    entry = inventory[source["filepath"]]
+    if image.size != (int(entry["width"]), int(entry["height"])):
+        raise ValueError("diffusion probe source dimensions differ from inventory")
+    geometry = native_generation_geometry(*image.size)
     attempt = {"generation_seed":314159, "class_name":source["class_name"]}
-    output, details = generate_diffusion(image, attempt, config, {**snapshot, "pipeline":pipeline, "device":"cuda"})
-    geometry = letterbox_geometry(image.width, image.height, 384, 160)
-    if output.size != (geometry["width"],geometry["height"]) or details["source_bbox"] != geometry["source_bbox"] or details["precision"] != "float32":
-        raise ValueError("diffusion preflight geometry or precision mismatch")
-    return details
+    try:
+        pipeline = load_pinned_diffusion(root, snapshot)
+        output, details = generate_diffusion(image, attempt, config, {**snapshot, "pipeline":pipeline, "device":"cuda"})
+    except torch.OutOfMemoryError as error:
+        width, height = geometry["generation_canvas_width"], geometry["generation_canvas_height"]
+        raise ValueError(f"CUDA OOM during native FP32 diffusion preflight at {width}x{height}, batch 1") from error
+    if (output.mode != "RGB" or output.size != image.size or details.get("precision") != "float32"
+            or any(details.get(key) != value for key, value in geometry.items())):
+        raise ValueError("diffusion preflight native geometry or precision mismatch")
+    return {**details, "probe_source_path": source["filepath"], "probe_source_sha256": source["sha256"]}
 
 
 def source_code_sha256(root):

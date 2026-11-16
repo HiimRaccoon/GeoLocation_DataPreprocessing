@@ -1,4 +1,4 @@
-benchmark_id: geoguessr50k_country_augmentation_v1_1
+benchmark_id: geoguessr50k_country_augmentation_v1_2
 conditions: [original, augmented]
 model: efficientnet_b0
 weights: IMAGENET1K_V1

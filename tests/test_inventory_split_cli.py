@@ -4,6 +4,7 @@ from PIL import Image
 
 from geoguessr_benchmark import __main__
 from geoguessr_benchmark import inventory
+from geoguessr_benchmark.cleaning import HUD_BOXES
 
 
 def test_cli_inventory_split_and_verify_fixture(tmp_path, monkeypatch, capsys):
@@ -14,11 +15,19 @@ def test_cli_inventory_split_and_verify_fixture(tmp_path, monkeypatch, capsys):
     for i in range(4):
         Image.new("RGB", (8, 8), (i * 50, 20, 60)).save(directory / f"{i}.jpg")
     monkeypatch.setattr(inventory, "DEFAULT_BASELINE", {"images": 4, "classes": 1})
+    monkeypatch.setitem(HUD_BOXES, (8, 8), ((1, 1, 2, 2), (4, 4, 6, 6)))
+    assert __main__.main(["--root", str(tmp_path), "inventory"]) == 1
+    assert __main__.main(["--root", str(tmp_path), "clean"]) == 0
+    # Raw membership and bytes are outside inventory and split.
+    (directory / "0.jpg").write_bytes(b"unreadable raw")
     assert __main__.main(["--root", str(tmp_path), "inventory"]) == 0
     assert __main__.main(["--root", str(tmp_path), "split"]) == 0
     assert __main__.main(["--root", str(tmp_path), "verify", "--stage", "splits"]) == 0
     assert (tmp_path / "reports/split_audit.json").exists()
     assert (tmp_path / "benchmark_lock.json").exists()
+    for split in ("train", "val", "test"):
+        manifest = (tmp_path / f"splits/{split}.csv").read_text(encoding="utf-8")
+        assert "data/cleaned_dataset/" in manifest and "data/compressed_dataset/" not in manifest
     assert __main__.main(["--root", str(tmp_path), "verify", "--stage", "preflight"]) != 0
     assert "required stage not published" in capsys.readouterr().err
 

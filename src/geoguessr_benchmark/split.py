@@ -6,7 +6,8 @@ import json
 import math
 from pathlib import Path
 
-from .artifacts import BENCHMARK_ID, atomic_write_bytes, canonical_csv_bytes, canonical_json_bytes, sha256_file
+from .artifacts import BENCHMARK_ID, CLEANED_DATASET, CLEANING_MANIFEST, atomic_write_bytes, canonical_csv_bytes, canonical_json_bytes, resolve_cleaned_image, sha256_file
+from .cleaning import read_cleaning_manifest
 
 SPLIT_FIELDS = ["image_id", "filepath", "class_name", "class_id", "split", "sha256", "decoded_pixel_sha256", "is_synthetic"]
 GROUP_FIELDS = ["class_id", "class_name", "original_train_count", "group", "target", "required_accepted", "accepted_actual"]
@@ -199,22 +200,30 @@ def build_split(root):
     mapping = json.loads((root / "splits/class_to_idx.json").read_text(encoding="utf-8"))
     if audit.get("unreadable") or audit.get("conflicting_duplicates") or sha256_file(inventory_path) != audit.get("dataset_fingerprint"):
         raise ValueError("inventory is not current or audit failed")
+    cleaned_classes, cleaning = read_cleaning_manifest(root)
+    cleaning_sha = sha256_file(root / CLEANING_MANIFEST)
+    if cleaning_sha != audit.get("cleaning_manifest_sha256"):
+        raise ValueError("cleaning manifest differs from inventory")
     if len(rows) != audit["baseline"]["images"] or len(mapping) != audit["baseline"]["classes"]:
         raise ValueError("inventory baseline mismatch")
-    dataset = root / "data/compressed_dataset"
+    dataset = root / CLEANED_DATASET
     actual_classes = {path.name for path in dataset.iterdir() if path.is_dir()}
     actual_paths = {path.relative_to(root).as_posix() for name in actual_classes
                     for path in (dataset / name).rglob("*") if path.is_file() and path.suffix.lower() == ".jpg"}
-    if actual_classes != set(mapping) or actual_paths != {row["filepath"] for row in rows}:
+    if actual_classes != set(mapping) or actual_classes != set(cleaned_classes) or actual_paths != set(cleaning) or actual_paths != {row["filepath"] for row in rows}:
         raise ValueError("dataset membership changed since inventory")
     by_class = defaultdict(list)
     hash_classes = {}
     for row in rows:
         name, path = row["class_name"], row["filepath"]
         expected_id = hashlib.sha256(path.encode("utf-8")).hexdigest()
-        file = (root / path).resolve()
-        if not file.is_relative_to(root / "data/compressed_dataset") or not file.is_file() or sha256_file(file) != row["sha256"]:
+        file = resolve_cleaned_image(root, path)
+        if not file.is_file() or sha256_file(file) != row["sha256"]:
             raise ValueError(f"inventory file changed: {path}")
+        entry = cleaning[path]
+        if (row["sha256"] != entry["cleaned_sha256"] or row["decoded_pixel_sha256"] != entry["cleaned_pixel_sha256"]
+                or (int(row["width"]), int(row["height"])) != (entry["width"], entry["height"])):
+            raise ValueError(f"inventory does not match cleaning provenance: {path}")
         if mapping.get(name) != int(row["class_id"]) or row["image_id"] != expected_id or row["readable"] != "true":
             raise ValueError(f"invalid inventory row: {path}")
         for key in EXACT_HASH_FIELDS:
@@ -261,7 +270,7 @@ def build_split(root):
     atomic_write_bytes(root / "reports/split_audit.json", canonical_json_bytes(audit))
     if collisions:
         raise ValueError("cross-split duplicate detected")
-    artifacts = {"docs/specs.md": sha256_file(root / "docs/specs.md"),
+    artifacts = {CLEANING_MANIFEST: cleaning_sha, "docs/specs.md": sha256_file(root / "docs/specs.md"),
                  "reports/dataset_inventory.csv": sha256_file(inventory_path),
                  "reports/split_audit.json": sha256_file(root / "reports/split_audit.json"),
                  "splits/class_to_idx.json": sha256_file(root / "splits/class_to_idx.json")}

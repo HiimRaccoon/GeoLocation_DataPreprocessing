@@ -1,20 +1,14 @@
 # Technical specification: GeoGuessr-50k country classification benchmark
 
-**Phiên bản:** 1.1  
-**Trạng thái:** **FROZEN — sẵn sàng bắt đầu implementation**; chưa triển khai code, tạo split, sinh ảnh hoặc chạy training.  
+**Phiên bản:** 1.2
+
+**Trạng thái:** **FROZEN**; các cổng thực nghiệm v1.2 cần bằng chứng mới.
+
 **Ngôn ngữ báo cáo:** tiếng Việt; tên trường dữ liệu và artifact dùng tiếng Anh.
 
-### Changes from v1.0
+### Thay đổi ở v1.2
 
-1. Stable Diffusion generation canvas chuyển sang **384 × 160**, thay canvas của v1.0; file synthetic cuối chỉ lưu generated source-content region sau crop theo `source_bbox`.
-2. Stable Diffusion tiếp tục giữ **FP32**; không chuyển sang FP16.
-3. DINO similarity chuyển thành **diagnostic-only**, bỏ toàn bộ hard acceptance/rejection thresholds.
-4. Traditional augmentation dùng automatic QC, không còn bắt buộc human review.
-5. Diffusion images tiếp tục bắt buộc human geographic-cue review.
-
-Các quyết định methodology khác của v1.0 được giữ nguyên.
-
-**Final patch trước implementation:** giữ nguyên generation canvas/configuration, crop generated canvas theo `source_bbox` trước khi lưu JPEG để loại reflection-padding regions khỏi file synthetic. Classifier letterbox lại content-only file bằng ImageNet-mean padding. Benchmark ID khóa tại `geoguessr50k_country_augmentation_v1_1`; đặc tả 1.1 này đã frozen.
+Benchmark ID là `geoguessr50k_country_augmentation_v1_2`. Cả hai condition dùng cùng ảnh cleaned sau khi che hai HUD cố định. Traditional và SD 1.5 img2img dùng kích thước native; diffusion chỉ thêm reflection padding tối thiểu cho VAE rồi crop bỏ padding. Classifier tiếp tục dùng letterbox ImageNet mean ở 384 × 160. Diffusion giữ FP32 và human review bắt buộc; DINO chỉ ghi chẩn đoán.
 
 ## 1. Câu hỏi và phạm vi
 
@@ -24,16 +18,25 @@ Benchmark kiểm tra: **với cùng model, cấu hình training và tập valida
 
 | Condition | Training dataset | Validation/Test |
 |---|---|---|
-| `original` — Condition A | Original train split | Fixed original real splits |
-| `augmented` — Condition B | Original train + offline traditional + offline diffusion | Cùng các splits của A |
+| `original` — Condition A | Cleaned real train | Fixed cleaned real splits |
+| `augmented` — Condition B | Cùng cleaned real train + offline traditional + offline diffusion | Cùng các splits của A |
 
 Biến can thiệp duy nhất là **training dataset**. Model, pretrained weights, seed ghép cặp, preprocessing, batch size, loss, optimizer, LR, scheduler theo tiến độ epoch, số epochs, checkpoint policy và metrics giống nhau. B sử dụng đúng một bộ ảnh offline đã khóa cho cả ba seeds.
+
+Trong đặc tả này, “original train” hoặc “ảnh thật gốc” trong các split là ảnh real đã clean, chưa qua augmentation. Raw chỉ là đầu vào của bước `clean`.
 
 Kết quả đo hiệu ứng của toàn bộ chính sách bổ sung dữ liệu. Với cùng 20 epochs, B có nhiều optimizer steps và tổng lượt xem ảnh hơn A; đây là hệ quả của dataset lớn hơn và phải được công bố. Benchmark này không tách riêng hiệu ứng traditional với diffusion, và không phải so sánh equal-compute.
 
 ## 2. Dataset và inventory
 
-Root: `data/compressed_dataset`. Mỗi thư mục cấp đầu là một class; giữ nguyên tên quốc gia/vùng lãnh thổ.
+Raw input chỉ đọc tại `data/compressed_dataset`. Trước inventory, chạy `clean` để xuất JPEG native vào `data/cleaned_dataset` với cùng class directory, thư mục con và filename. Decode và áp EXIF orientation trước khi dùng tọa độ trên RGB. Chỉ che đúng hai bbox half-open bằng RGB `(128,128,128)`:
+
+| Kích thước | HUD MAP/ROUND/SCORE | Minimap |
+|---|---|---|
+| 1536 × 662 | `[1253,15,1505,73]` | `[1257,448,1505,603]` |
+| 1030 × 703 | `[747,15,999,73]` | `[832,554,1000,646]` |
+
+Giữ nguyên dimensions, dùng JPEG RGB quality 95, subsampling 0, bỏ EXIF. Kích thước ngoài bảng làm cleaning thất bại. `reports/cleaning_manifest.json` ghi policy/version, benchmark ID, fill RGB, đường dẫn raw/cleaned, dimensions, bboxes và SHA-256 của file bytes và decoded RGB pixels cho cả hai bản. Inventory xác minh membership, kích thước và các hash cleaned theo manifest. Split chỉ dùng inventory của bản cleaned đó và khóa checksum manifest cùng các artifact split. Validation, test và mọi augmentation source đều xuất phát từ cleaned dataset.
 
 | Thuộc tính | Giá trị đã thống kê |
 |---|---:|
@@ -143,7 +146,7 @@ Xử lý attempts theo thứ tự tăng dần kể cả khi generation song song
 
 ## 6. Traditional offline augmentation cho Medium
 
-Áp trên RGB đã orient ở resolution gốc, giữ width/height. Mỗi candidate chọn đều `k in {1,2}`, rồi chọn không hoàn lại k transform từ bảng, áp theo thứ tự bảng. Không sử dụng một transform nhiều lần trong một candidate.
+Áp trên cleaned RGB native của split train, giữ width/height. Mỗi candidate chọn đều `k in {1,2}`, rồi chọn không hoàn lại k transform từ bảng, áp theo thứ tự bảng. Không sử dụng một transform nhiều lần trong một candidate.
 
 | Transform | Fixed parameter distribution |
 |---|---|
@@ -165,7 +168,7 @@ Không dùng flip ngang/dọc, rotation lớn, hue shift mạnh, aggressive crop
 
 Default là **DA-Fusion-inspired Stable Diffusion image-to-image**, trường manifest `augmentation_type=da_fusion`, `method_variant=sd15_img2img_fixed`. Đề bài cho phép hướng DA-Fusion / Stable Diffusion img2img; ở đây khóa biến thể img2img có conditioning theo class và source. Không tuyên bố tái lập nguyên bản toàn bộ DA-Fusion paper, không thêm textual inversion, LoRA hay fine-tuning diffusion trong default. Nếu sau này yêu cầu tái lập paper, đó là thay đổi đặc tả cần được ghi nhận trước benchmark. Tham chiếu phương pháp gốc: [DA-Fusion](https://arxiv.org/abs/2302.07944).
 
-Luồng: `original train image -> EXIF transpose + RGB -> aspect-preserving letterbox 384 × 160 -> VAE encode -> forward noising theo strength -> conditioned denoising -> VAE decode thành generated canvas 384 × 160 -> crop theo source_bbox -> save generated CONTENT ONLY -> automatic QC + hash audit -> human geographic review -> accept/reject -> classifier letterbox 384 × 160 bằng ImageNet-mean padding`. DINO similarity được log cho diagnostics riêng và không quyết định acceptance. Ý nghĩa các tham số theo [Diffusers img2img API](https://huggingface.co/docs/diffusers/api/pipelines/stable_diffusion/img2img).
+Luồng: `cleaned real train JPEG → native RGB → minimal reflection pad /8 → VAE encode → img2img → VAE decode → crop theo source_bbox → native JPEG content-only → QC/hash audit → human geographic review`. Resize cho classifier chỉ diễn ra tại train/eval. DINO similarity được ghi riêng cho chẩn đoán.
 
 ### 7.2. Fixed generation configuration
 
@@ -182,8 +185,10 @@ guidance_scale: 5.0
 num_inference_steps: 40
 num_images_per_prompt: 1
 generation_batch_size: 1
-generation_canvas_width: 384
-generation_canvas_height: 160
+generation_resolution_policy: native_pad_to_multiple
+generation_multiple: 8
+generation_padding_mode: reflect
+generation_downsample: false
 precision: float32
 attention_backend: standard
 xformers: false
@@ -197,25 +202,16 @@ output_subsampling: 0
 
 Model lấy từ [SD 1.5 model repository](https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5). Trước generation phải resolve repository revision thành immutable commit SHA, hash weights, tokenizer, VAE và scheduler config; lưu vào lock. Không tải nhánh mutable trong lúc benchmark. `num_inference_steps=40` là tham số pipeline yêu cầu, không phải cam kết 40 denoising iterations thực tế ở strength 0.35; log cả timestep schedule thực tế.
 
-Generation chạy **FP32** cho mọi attempt; classifier cũng giữ FP32 cho cả sáu runs. Giữ `attention_backend=standard`, `xformers=false`; không bật FP16, BF16, quantization hay attention optimization khác. Preflight phải kiểm tra generation FP32, batch 1, canvas 384 × 160 với model thực tế. Nếu môi trường không chạy được cấu hình này, fail preflight và báo vấn đề; không tự đổi precision hoặc backend.
+Generation giữ **FP32**, standard attention và `xformers=false`. GPU preflight chạy model thật với batch 1 trên cleaned train source có padded canvas lớn nhất. CUDA OOM làm preflight thất bại và báo geometry; không hạ resolution, đổi precision hoặc đổi backend.
 
-Generation preprocessing dùng **width 384, height 160** để ưu tiên tốc độ, giữ bố cục panorama ngang và thống nhất spatial resolution với classifier:
+Với cleaned RGB có kích thước `W × H`, canvas là `(ceil(W/8)*8, ceil(H/8)*8)`. Giữ nguyên pixel vùng source. Chia phần thiếu để center reflection-pad không lặp pixel biên; left/top lấy floor, phần lẻ ở right/bottom. Lưu `source_bbox=[left,top,left+W,top+H]` cùng dimensions và bốn offsets. Kiểm tra VAE decode trả đúng canvas rồi crop một lần theo bbox, lưu JPEG content-only cùng kích thước native của source.
 
-1. EXIF transpose source ORIGINAL TRAIN image rồi convert RGB.
-2. `scale = min(384/W, 160/H)`; resize bằng bilinear antialias, giữ aspect ratio. `new_W = min(384,max(1,floor(W*scale+0.5)))`, tương tự `new_H` với 160.
-3. Center pad lên 384 × 160 bằng **reflection**, giữ padding mode đã khóa. `left=floor((384-new_W)/2)`, `top=floor((160-new_H)/2)`; phần dư đặt right/bottom. Reflection không lặp pixel biên; thuật toán và image backend được pin trong environment lock. Không direct-resize méo ảnh hoặc crop nội dung Street View.
-4. Lưu `source_bbox=[left,top,left+new_W,top+new_H]`, tọa độ pixel half-open trên canvas, cùng `resized_source_width`, `resized_source_height`, padding mode và bốn padding offsets. Với source 1536 × 662: resized 371 × 160, bbox `[6,0,377,160]`; với 1030 × 703: resized 234 × 160, bbox `[75,0,309,160]`.
-5. Stable Diffusion img2img nhận canvas 384 × 160; tensor không batch của input và generated canvas **trước crop** có shape **3 × 160 × 384**, batch 1 có shape **1 × 3 × 160 × 384**. Đây là image canvas trong generation, không phải kích thước latent tensor nội bộ VAE hoặc dimensions của final synthetic file.
-6. VAE decode thành generated canvas **384 × 160**, sau đó crop đúng `source_bbox` half-open để loại toàn bộ vùng ngoài resized source content. Lưu **generated CONTENT ONLY** theo JPEG policy chung; không resize content về kích thước ảnh gốc. `output_width = bbox_right - bbox_left = new_W`, `output_height = bbox_bottom - bbox_top = new_H`. File synthetic cuối có kích thước phụ thuộc source bbox, không phụ thuộc trực tiếp canvas dimensions.
+| Cleaned source | SD canvas | `source_bbox` | JPEG sau crop |
+|---|---|---|---|
+| 1536 × 662 | 1536 × 664 | `[0,1,1536,663]` | 1536 × 662 |
+| 1030 × 703 | 1032 × 704 | `[1,0,1031,703]` | 1030 × 703 |
 
-`source_bbox` luôn lưu theo tọa độ trên **generated canvas trước crop** và quyết định kích thước content-only file. Sau crop, tọa độ content trong file lưu bắt đầu từ `(0,0)`; không áp `source_bbox` lần thứ hai lên file này. Basic blank/blur checks, duplicate hashes, DINO diagnostics và human review dùng file content-only cuối đã encode/decode, so với source train hoặc source đã resize theo yêu cầu từng check. Generated reflection-padding regions không được đưa vào final synthetic file hay classifier input dưới dạng nội dung synthetic; mục đích là tránh synthetic-only visual cues từ vùng padding sau diffusion.
-
-Classifier tiếp tục dùng cùng preprocessing 384 × 160 cho real và synthetic: letterbox content-only diffusion file bằng **ImageNet-mean padding** theo mục 10. Padding generation vẫn là reflection và đã bị loại khỏi file lưu ở bước crop; không đổi generation configuration.
-
-| Original source | Resized source content | SD generated canvas | Synthetic file sau crop | Classifier canvas |
-|---|---|---|---|---|
-| 1536 × 662 | 371 × 160 | 384 × 160 | **371 × 160** | 384 × 160, ImageNet-mean padding |
-| 1030 × 703 | 234 × 160 | 384 × 160 | **234 × 160** | 384 × 160, ImageNet-mean padding |
+Bbox dùng tọa độ canvas trước crop. QC, review, DINO và classifier đọc JPEG đã crop từ tọa độ `(0,0)`.
 
 Prompt cố định theo template, chỉ thay `{class_name}` bằng tên thư mục:
 
@@ -243,17 +239,17 @@ QC chạy trên file output cuối, trước khi synthetic tham gia train. **Tra
 
 ### 8.1. Basic và visual checks
 
-1. Decode JPEG thành RGB hợp lệ, width/height dương, không NaN/Inf. Traditional phải giữ đúng dimensions source. Với diffusion, xác minh generated canvas trước crop là 384 × 160, `source_bbox` hợp lệ và nằm trong canvas; file synthetic cuối phải có `width=bbox_right-bbox_left=resized_source_width`, `height=bbox_bottom-bbox_top=resized_source_height`. Ví dụ valid final files là 371 × 160 hoặc 234 × 160 theo source tương ứng. Không dùng canvas dimensions làm yêu cầu kích thước final file, không áp minimum short edge lớn hơn content height.
+1. Decode JPEG thành RGB hợp lệ, width/height dương, không NaN/Inf. Traditional phải giữ đúng dimensions source. Với diffusion, xác minh metadata canvas, bbox và offsets khớp với native padding theo §7.2; final RGB JPEG phải đúng kích thước native của cleaned source. Không dùng canvas dimensions làm yêu cầu kích thước final file, không áp minimum short edge lớn hơn content height.
 2. Trên grayscale uint8 vùng ảnh thật, standard deviation phải `>= 5` và tỷ lệ pixel có intensity `<=2` hoặc `>=253` phải `< 0.98`; nếu không reject blank/saturation.
 3. Kiểm tra source ID/hash thuộc ORIGINAL TRAIN, label không đổi và transform provenance khớp fixed policy. Traditional chỉ cần automatic checks về decode/RGB, dimensions, non-blank, exact duplicates và provenance; không yêu cầu reviewer xem từng ảnh hoặc review toàn bộ contact sheets.
-4. Với **diffusion**, giữ blur check: lấy toàn bộ decoded content-only file và source đã resize về đúng kích thước content file, rồi resize giữ aspect ratio về long edge 384. Không crop lại file theo `source_bbox`. Dùng grayscale `[0,255]`, Laplacian kernel `[[0,1,0],[1,-4,1],[0,1,0]]`, reflect boundary. Yêu cầu `variance(output) >= max(5, 0.5*variance(source))`. Không dùng generation padding làm vùng tính blur.
+4. Với **diffusion**, giữ blur check: lấy toàn bộ decoded content-only file và cleaned source ở native dimensions, rồi resize giữ aspect ratio về long edge 384. Không crop lại file theo `source_bbox`. Dùng grayscale `[0,255]`, Laplacian kernel `[[0,1,0],[1,-4,1],[0,1,0]]`, reflect boundary. Yêu cầu `variance(output) >= max(5, 0.5*variance(source))`. Không dùng generation padding làm vùng tính blur.
 5. Với **diffusion**, reject severe distortion/visual generation failure, artifacts hoặc geographic inconsistency theo mandatory human review ở mục 7.3. Nếu ambiguous dùng `reject_ambiguous`. Không dựa chỉ vào blur metric để kết luận ảnh đúng label. Traditional không có human-review gate.
 
 ### 8.2. Exact duplicates và DINO diagnostics
 
 Mọi output phải khác decoded-pixel hash của source, mọi original train image và synthetic đã accepted. Không dùng file-byte khác nhau do JPEG metadata làm bằng chứng diversity.
 
-Với diffusion, dùng frozen `dino_vits16` từ [DINO official repository](https://github.com/facebookresearch/dino), pin code commit và pretrained weight SHA-256. Không train encoder này. Input diagnostics là source đã resize về content dimensions và toàn bộ decoded generated content-only file đã crop theo mục 7.2; không crop lại bằng tọa độ canvas và không dùng generated reflection padding. Mỗi ảnh được letterbox toàn nội dung về 224 × 224, RGB padding ImageNet mean, bilinear antialias, ImageNet normalization; lấy global embedding và L2 normalize. Resolution 224 × 224 này chỉ thuộc encoder diagnostics, không thay generation canvas hoặc classifier input 384 × 160.
+Với diffusion, dùng frozen `dino_vits16` từ [DINO official repository](https://github.com/facebookresearch/dino), pin code commit và pretrained weight SHA-256. Không train encoder này. Input diagnostics là cleaned source ở native dimensions và toàn bộ decoded generated content-only file đã crop theo mục 7.2; không crop lại bằng tọa độ canvas và không dùng generated reflection padding. Mỗi ảnh được letterbox toàn nội dung về 224 × 224, RGB padding ImageNet mean, bilinear antialias, ImageNet normalization; lấy global embedding và L2 normalize. Resolution 224 × 224 này chỉ thuộc encoder diagnostics, không thay generation canvas hoặc classifier input 384 × 160.
 
 Log `dino_source_similarity` là cosine giữa source/output, và `dino_nearest_sibling_similarity` là cosine cao nhất với diffusion output khác cùng source trong tập accepted cuối cùng, không so ảnh với chính nó. Lưu cả ID sibling gần nhất; nếu không có sibling hợp lệ thì ghi `null` và lý do. Ghi diagnostics cho accepted và rejected candidates đọc được; lỗi tính embedding ghi `null` cùng diagnostic error.
 
@@ -263,7 +259,7 @@ Mọi failure phải có reason enum, ví dụ `unreadable`, `invalid_rgb`, `inv
 
 ## 9. Augmentation manifest và provenance
 
-`augmentation/manifests/candidates.jsonl` chứa mọi attempt; `accepted.jsonl` chỉ chứa final accepted. Nested fields lưu JSON, không serialize Python repr.
+`augmentation/manifests/candidates.jsonl` chứa `benchmark_id` và provenance cho mọi attempt; `accepted.jsonl` chỉ chứa final accepted. Nested fields lưu JSON, không serialize Python repr.
 
 Trường bắt buộc chung:
 
@@ -280,13 +276,13 @@ output_width, output_height, output_sha256, output_pixel_sha256,
 config_sha256, environment_lock_sha256
 ```
 
-Trường diffusion bổ sung: `diffusion_model`, `model_revision`, `weights_sha256`, `prompt`, `negative_prompt`, `strength`, `guidance_scale`, `num_inference_steps`, actual timesteps, scheduler config, `generation_canvas_width=384`, `generation_canvas_height=160`, `precision=float32`, `source_bbox`, `resized_source_width`, `resized_source_height`, padding mode/offsets theo mục 7.2, `output_content_only=true`. `source_bbox` là tọa độ half-open trên canvas trước crop và bắt buộc giữ trong manifest. `synthetic_path` trỏ tới content-only JPEG; `output_width`/`output_height` bằng bbox dimensions, còn output hashes tính trên final file/pixels sau crop và JPEG decode. Không dùng generation canvas width/height thay final-file dimensions. Hai similarity fields và sibling ID chỉ là diagnostic metadata, không tham gia acceptance. Traditional ghi `null` cho DINO, reviewer fields và các trường diffusion không áp dụng; mọi sampled transform lưu trong `augmentation_parameters`.
+Trường diffusion bổ sung: `diffusion_model`, `model_revision`, `weights_sha256`, `prompt`, `negative_prompt`, `strength`, `guidance_scale`, `num_inference_steps`, actual timesteps, scheduler config, `generation_canvas_width`, `generation_canvas_height`, `precision=float32`, `source_bbox`, `source_content_width`, `source_content_height`, padding mode/offsets theo mục 7.2, `output_content_only=true`. `source_bbox` là tọa độ half-open trên canvas trước crop và bắt buộc giữ trong manifest. `synthetic_path` trỏ tới content-only JPEG; `output_width`/`output_height` bằng bbox dimensions, còn output hashes tính trên final file/pixels sau crop và JPEG decode. Không dùng generation canvas width/height thay final-file dimensions. Hai similarity fields và sibling ID chỉ là diagnostic metadata, không tham gia acceptance. Traditional ghi `null` cho DINO, reviewer fields và các trường diffusion không áp dụng; mọi sampled transform lưu trong `augmentation_parameters`.
 
 `filter_status` là `pending`, `accepted` hoặc `rejected`; chỉ `accepted=true` và `filter_status=accepted` được đưa vào `splits/train_augmented.csv`. Manifest này là union original train và accepted outputs, không lặp original record, không chứa rejected/pending. Mọi source phải có `source_split=train` và provenance một bước về real image.
 
 Preflight và generation ghi scheduler config dưới dạng JSON chuẩn hóa. Danh sách tên `_use_default_values` được sắp xếp vì thứ tự của nó không mang ý nghĩa. Mọi giá trị cấu hình và thứ tự các danh sách còn lại đều được đối chiếu với preflight. Khác biệt có ý nghĩa hoặc `actual_timesteps` sai giá trị hay thứ tự làm provenance không hợp lệ.
 
-Khi cập nhật lên bản sửa split và provenance, lưu riêng các artifact của lần chạy cũ. Nếu lock cũ đã khóa bản `docs/specs.md` trước bản sửa, chạy lại `inventory` và `split` trong thư mục chạy sạch với cùng dataset real, rồi kiểm tra `verify --stage splits`. Với bản stage `splits` đã được tạo theo đặc tả mới, có thể khôi phục nguyên bộ artifact cùng lock đã xác minh. Chạy lại GPU `preflight` để khóa checksum mã nguồn hiện tại rồi chạy `augment` từ manifest ứng viên mới.
+V1.1 không tương thích với v1.2. Giữ khóa, manifests, review và checkpoint cũ ở run root riêng. Với v1.2, bắt đầu từ cùng raw JPEG trong run root mới, chạy `clean` → `inventory` → `split` → `verify --stage splits` → GPU `preflight` → `augment`. Tạo lại candidates, review, membership và train union theo v1.2. GPU preflight khóa lại `code_sha256`.
 
 ## 10. Model và classifier preprocessing
 
@@ -304,12 +300,12 @@ Classifier preprocessing giống hệt ở train/val/test cho real, traditional 
 
 Với 1536 × 662, vùng resize là 371 × 160; với 1030 × 703 là 234 × 160 theo quy tắc trên. Không direct-resize toàn ảnh thành 384 × 160, không dùng default ImageNet center crop của weights transform. Không có random online augmentation, kể cả flip/crop/color jitter. Dropout của model vẫn là thành phần model giống nhau trong hai conditions.
 
-Diffusion synthetic file đã crop chỉ chứa generated source content: 371 × 160 hoặc 234 × 160 trong hai ví dụ trên. Cùng preprocessing này nhận file đó, resize giữ aspect ratio (scale bằng 1 trong hai ví dụ), rồi center pad bằng ImageNet mean thành 384 × 160. Classifier không đọc full generated canvas hay tái tạo reflection-padding regions; crop theo `source_bbox` chỉ thuộc bước lưu diffusion output, không phải augmentation/crop online của classifier.
+Diffusion synthetic JPEG sau crop và traditional JPEG có đúng native dimensions của cleaned source. Classifier decode ảnh native, resize giữ aspect ratio rồi center pad bằng ImageNet mean thành 384 × 160.
 
 ## 11. Fixed training configuration
 
 ```yaml
-benchmark_id: geoguessr50k_country_augmentation_v1_1
+benchmark_id: geoguessr50k_country_augmentation_v1_2
 conditions: [original, augmented]
 model: efficientnet_b0
 weights: IMAGENET1K_V1
@@ -474,7 +470,8 @@ project/
   benchmark_lock.json
   environment.lock.txt
   data/
-    compressed_dataset/                  # originals, read-only trong pipeline
+    compressed_dataset/                  # raw, chỉ đọc ở bước clean
+    cleaned_dataset/<class_name>/       # cleaned real JPEG cho cả ba split
     augmented_dataset/
       traditional/<class_name>/
       da_fusion/<class_name>/
@@ -501,6 +498,7 @@ project/
     augmented/seed_123/
     augmented/seed_2026/
   reports/
+    cleaning_manifest.json
     dataset_inventory.csv
     split_audit.json
     per_seed_metrics.csv
@@ -534,7 +532,7 @@ run_metadata.json
 
 Thứ tự triển khai sau khi đặc tả được chấp nhận:
 
-1. Inventory, đọc ảnh, mapping và duplicate audit; kiểm tra baseline.
+1. Chạy `clean`, xác minh cleaning manifest, rồi inventory cleaned, mapping, duplicate audit và baseline.
 2. Tạo deterministic original split, group assignments, thống kê evaluable classes; khóa manifests.
 3. Resolve/pin environment và model artifacts; materialize fixed configs, memory-only batch preflight.
 4. Generate offline đúng source train; traditional chạy automatic QC, diffusion chạy automatic QC/hash audit và mandatory human geographic review. Khóa accepted membership độc lập DINO, log DINO diagnostics, freeze dataset và provenance. Fail nếu thiếu quota hoặc QC/leakage audit chưa pass.
@@ -561,7 +559,7 @@ Một run hợp lệ khi shared config hash giống năm runs còn lại sau khi
 
 ## 19. Fixed decisions bổ sung từ đặc tả
 
-Các defaults cần thiết nhưng đề bài chưa chốt hoàn toàn: round-half-up 10% cho split; hash-based deterministic ordering; singleton target 5 total; augmentation seed 314159; transform distributions và k=1–2; SD 1.5 img2img variant, DDIM/strength/guidance/steps; generation letterbox reflection padding trên canvas 384 × 160, crop theo `source_bbox` và lưu generated content-only; JPEG encoding; automatic QC với blank/blur checks đúng phạm vi; DINO diagnostic logging không có acceptance threshold; human review chỉ diffusion; bounded retry/shortage policy; classifier RGB padding mean; AdamW betas/eps/decay policy; warmup/cosine step formula; FP32; batch fallback memory-only; deterministic execution; checkpoint tie-break; evaluable-label macro denominator; group metrics từ full confusion matrix; sample std ddof=1 và paired deltas.
+Các defaults cần thiết nhưng đề bài chưa chốt hoàn toàn: round-half-up 10% cho split; hash-based deterministic ordering; singleton target 5 total; augmentation seed 314159; transform distributions và k=1–2; SD 1.5 img2img variant, DDIM/strength/guidance/steps; generation native với reflection padding tối thiểu đến bội số 8, crop theo `source_bbox` và lưu generated content-only; JPEG encoding; automatic QC với blank/blur checks đúng phạm vi; DINO diagnostic logging không có acceptance threshold; human review chỉ diffusion; bounded retry/shortage policy; classifier RGB padding mean; AdamW betas/eps/decay policy; warmup/cosine step formula; FP32; batch fallback memory-only; deterministic execution; checkpoint tie-break; evaluable-label macro denominator; group metrics từ full confusion matrix; sample std ddof=1 và paired deltas.
 
 Tất cả là fixed configuration, không phải search space. Exact environment versions/revisions, batch size được chọn bằng memory-only preflight và fingerprints phải được ghi vào lock trước main experiment. Không có kết quả experiment nào được giả định trong tài liệu này.
 
@@ -571,7 +569,8 @@ Tất cả là fixed configuration, không phải search space. Exact environmen
 - [ ] Fixed split created before augmentation
 - [ ] Split manifest frozen
 - [ ] Validation contains only real images
-- [ ] Test contains only real images
+- [ ] Two fixed HUDs masked; raw files preserved; cleaning manifest verified
+- [ ] Val/test contain only cleaned real images
 - [ ] No val/test image used as augmentation source
 - [ ] No real/synthetic descendant leakage detected
 - [ ] Group assignments based on original train counts
@@ -579,7 +578,7 @@ Tất cả là fixed configuration, không phải search space. Exact environmen
 - [ ] `20–99` classes use traditional offline augmentation
 - [ ] `<20` classes use DA-Fusion-inspired fixed img2img variant
 - [ ] Synthetic images pass applicable automatic QC and hash duplicate audit
-- [ ] Generation canvas fixed at 384×160
+- [ ] Native diffusion canvas padded to multiples of 8; JPEG cropped to cleaned source dimensions
 - [ ] Diffusion output cropped to source_bbox before saving content-only JPEG
 - [ ] Final synthetic dimensions equal source_bbox dimensions; source_bbox retained in manifest
 - [ ] QC, hashes, DINO diagnostics and diffusion human review use final content-only files

@@ -8,7 +8,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="GeoGuessr-50k benchmark")
     parser.add_argument("--root", type=Path, default=Path.cwd(), help="benchmark project root")
     commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
-    commands.add_parser("inventory", help="audit original dataset")
+    commands.add_parser("clean", help="publish native JPEGs with the two fixed HUDs masked")
+    commands.add_parser("inventory", help="audit cleaned real dataset")
     commands.add_parser("split", help="create and lock fixed real splits")
     verify = commands.add_parser("verify", help="verify a published stage")
     commands.add_parser("report", help="recompute a report from locked test predictions")
@@ -30,7 +31,10 @@ def main(argv=None):
     verify.add_argument("--stage", choices=STAGES, required=True)
     args = parser.parse_args(argv)
     try:
-        if args.command == "inventory":
+        if args.command == "clean":
+            from .cleaning import clean_dataset
+            clean_dataset(args.root)
+        elif args.command == "inventory":
             from .inventory import build_inventory
             build_inventory(args.root)
         elif args.command == "split":

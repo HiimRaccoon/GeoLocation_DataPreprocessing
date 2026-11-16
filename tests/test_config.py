@@ -20,6 +20,9 @@ def copy_configs(root):
     ("configs/benchmark.yaml", "input_width", 512),
     ("configs/benchmark.yaml", "benchmark_id", "other"),
     ("augmentation/da_fusion/config.yaml", "strength", 0.5),
+    ("augmentation/da_fusion/config.yaml", "generation_multiple", 16),
+    ("augmentation/da_fusion/config.yaml", "generation_downsample", True),
+    ("augmentation/da_fusion/config.yaml", "generation_canvas_width", 384),
     ("augmentation/da_fusion/config.yaml", "prompt", "different"),
     ("augmentation/da_fusion/config.yaml", "qc", {"grayscale_std_min": 1.0}),
 ])

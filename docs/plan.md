@@ -2,17 +2,17 @@
 
 | Mục | Giá trị |
 |---|---|
-| Benchmark ID | `geoguessr50k_country_augmentation_v1_1` |
-| Nguồn yêu cầu | [docs/specs.md](specs.md), v1.1, FROZEN |
+| Benchmark ID | `geoguessr50k_country_augmentation_v1_2` |
+| Nguồn yêu cầu | [docs/specs.md](specs.md), v1.2, FROZEN |
 | Danh sách thực hiện | [docs/tasks.md](tasks.md) |
 | Mục tiêu | Đo thay đổi Macro-F1 và các chỉ số phụ khi bổ sung dữ liệu offline cho minority classes, với cùng thiết lập huấn luyện trên ba seed ghép cặp và cùng validation/test thật. |
-| Hiện trạng | Repository hiện có `docs/specs.md`, `docs/plan.md`, `docs/tasks.md` và `.agents/`. Mã nguồn Python và cấu hình chạy thuộc phần triển khai. Dataset tại `data/compressed_dataset/` và model snapshots là đầu vào môi trường chạy. Mọi counts bên dưới là baseline hoặc dự kiến theo spec. |
+| Hiện trạng | Repository hiện có `docs/specs.md`, `docs/plan.md`, `docs/tasks.md` và `.agents/`. Mã nguồn Python và cấu hình chạy thuộc phần triển khai. Raw JPEG tại `data/compressed_dataset/` là đầu vào chỉ đọc của `clean`; benchmark dùng `data/cleaned_dataset/`. Mọi counts bên dưới là baseline hoặc dự kiến theo spec. |
 
 ## 1. Phạm vi và tiêu chí hoàn thành
 
 Benchmark gồm đúng hai condition. `original` dùng `splits/train.csv`. `augmented` dùng `splits/train_augmented.csv`, tập hợp original train và synthetic đã được chấp nhận. Cả hai dùng chung `splits/val.csv`, `splits/test.csv`, mapping, group definitions, kiến trúc, pretrained weights, preprocessing, batch size, loss, optimizer, lịch LR, 20 epochs, checkpoint policy và metrics. Với mỗi seed `42`, `123`, `2026`, hai condition nạp chung một initial state. Ba run `augmented` dùng cùng một manifest offline đã khóa.
 
-Nghiệm thu khi toàn bộ artifacts ở §16 của spec có thể truy vết qua checksum, sáu run đủ 20 epochs, validation chọn đúng sáu best checkpoints, final test dùng các checkpoint đã khóa, và báo cáo tiếng Việt tái tổng hợp được từ predictions đã lưu. Hướng và độ lớn của delta Macro-F1 là kết quả cần đo. Phạm vi gồm một benchmark so sánh hai điều kiện tại fixed epochs, theo §1 và §18. Các thí nghiệm E1/E2/E3, tìm backbone, tuning, ablation hai phương pháp augmentation và equal-compute nằm ngoài phạm vi v1.1.
+Nghiệm thu khi toàn bộ artifacts ở §16 của spec có thể truy vết qua checksum, sáu run đủ 20 epochs, validation chọn đúng sáu best checkpoints, final test dùng các checkpoint đã khóa, và báo cáo tiếng Việt tái tổng hợp được từ predictions đã lưu. Hướng và độ lớn của delta Macro-F1 là kết quả cần đo. Phạm vi gồm một benchmark so sánh hai điều kiện tại fixed epochs, theo §1 và §18. Các thí nghiệm E1/E2/E3, tìm backbone, tuning, ablation hai phương pháp augmentation và equal-compute nằm ngoài phạm vi v1.2.
 
 ## 2. Bối cảnh kỹ thuật và quyết định triển khai
 
@@ -29,7 +29,7 @@ Khung thực thi trong [tasks.md](tasks.md) dùng checklist ID, phụ thuộc v�
 
 - Dùng `pyproject.toml` cho package và dependencies, `argparse` cho CLI, Pillow/libjpeg cho decode và JPEG, các phép ảnh RGB số thực qua NumPy/Torch/Torchvision dưới backend đã pin. Chốt cách encode/hash canonical trước khi có artifact đầu tiên. Với decoded-pixel hash, tuần tự hóa chiều rộng và chiều cao dưới dạng hai số nguyên không dấu 32-bit big-endian, rồi nối bytes RGB uint8 theo thứ tự hàng. Cùng helper được dùng cho ảnh real và synthetic.
 - Dùng một tiến trình ghi tại mỗi stage, kích hoạt bằng cập nhật lock sau cùng. Ghi file qua tệp tạm cùng filesystem và publish bằng rename. Khi gián đoạn, kiểm tra phần đã lưu theo ID, trạng thái và checksum trước khi tiếp tục. Chỉ stage đã publish đầy đủ mới được bước sau sử dụng.
-- Giữ seed, source và thứ tự theo spec. Khi cần phân xử duplicate giữa nhiều class, xử lý theo `(class_id, attempt_index)`. `synthetic_id` là SHA-256 của `synthetic-v1|<augmentation_type>|<class_id>|<attempt_index>` UTF-8. Trong review, gắn quyết định với `synthetic_id`, source/output hashes và rubric version. Ghi Top-5 scores dưới dạng raw logits, Top-1 dùng phần tử đầu của cùng thứ tự xếp hạng.
+- Giữ seed, source và thứ tự theo spec. Khi cần phân xử duplicate giữa nhiều class, xử lý theo `(class_id, attempt_index)`. `synthetic_id` là SHA-256 của `<benchmark_id>|<augmentation_type>|<class_id>|<attempt_index>` UTF-8. Trong review, gắn quyết định với `synthetic_id`, source/output hashes và rubric version. Ghi Top-5 scores dưới dạng raw logits, Top-1 dùng phần tử đầu của cùng thứ tự xếp hạng.
 
 ### Cấu trúc mã nguồn đề xuất
 
@@ -40,6 +40,7 @@ Các đường dẫn trong bảng tính từ thư mục `GeoLocation_DataPreproc
 | `pyproject.toml`, `.gitignore`, `tests/` | Môi trường cài đặt, bỏ qua dữ liệu thô/checkpoints/cache khi dùng Git và các fixtures kiểm thử. |
 | `src/geoguessr_benchmark/__main__.py`, `config.py` | CLI theo stage, đọc bộ cấu hình và bảo vệ giá trị cố định. |
 | `src/geoguessr_benchmark/artifacts.py`, `images.py` | Canonical CSV/JSON/hash và kiểm tra lock. Decode EXIF→RGB, pixel hash, JPEG và geometry letterbox dùng chung. |
+| `src/geoguessr_benchmark/cleaning.py` | Che hai HUD cố định theo resolution, lưu JPEG native và manifest raw/cleaned. |
 | `src/geoguessr_benchmark/inventory.py`, `split.py` | Inventory, mapping, deterministic split, duplicate audit, group budgets và evaluable IDs. |
 | `src/geoguessr_benchmark/classifier.py`, `preflight.py` | Preprocessing classifier, model, optimizer dùng chung với preflight, model snapshots, environment lock và CUDA checks. |
 | `src/geoguessr_benchmark/augmentation/policy.py`, `traditional.py`, `diffusion.py` | Source/attempt/seed policy, traditional transforms và SD img2img content-only. |
@@ -51,7 +52,9 @@ Các đường dẫn trong bảng tính từ thư mục `GeoLocation_DataPreproc
 
 ```mermaid
 flowchart TD
-    I[Inventory ảnh thật] --> S[Khóa split và groups]
+    C0[Raw GeoGuessr] --> H0[Clean hai HUD và ghi manifest]
+    H0 --> I[Inventory ảnh cleaned]
+    I --> S[Khóa split và groups]
     S --> P[Preflight môi trường và model]
     P --> T[Traditional và automatic QC]
     P --> D[Diffusion và automatic QC]
@@ -68,8 +71,9 @@ flowchart TD
 
 | Mốc | Bằng chứng để chuyển bước | Việc bị chặn nếu thiếu bằng chứng |
 |---|---|---|
-| Inventory và split | Dataset đúng baseline bắt buộc, mapping nhất quán, split deterministic, counts/support đã đối chiếu, audit IDs/hashes đạt. `benchmark_lock.json` ghi checksum split đã chốt. | Preflight benchmark và mọi generation chính thức. |
-| Environment và model preflight | `environment.lock.txt`, resolved revisions/hashes, config có batch size hiệu lực, kiểm tra deterministic FP32 trên đúng GPU, img2img thật với batch 1 và canvas 384 × 160. | Generation chính thức. |
+| Cleaning | Raw giữ nguyên, JPEG cleaned giữ dimensions và path, che đúng bbox và có provenance. | Inventory. |
+| Inventory và split | Dataset cleaned đúng baseline bắt buộc, mapping nhất quán, split deterministic, counts/support đã đối chiếu, audit IDs/hashes đạt. `benchmark_lock.json` ghi checksum split đã chốt. | Preflight benchmark và mọi generation chính thức. |
+| Environment và model preflight | `environment.lock.txt`, resolved revisions/hashes, config có batch size hiệu lực, kiểm tra deterministic FP32 trên đúng GPU, img2img thật batch 1 trên cleaned train source có padded canvas lớn nhất. | Generation chính thức. |
 | Accepted và dataset freeze | Đủ quota từng class, không còn pending, QC/review và provenance/hashes đạt. `augment-freeze` chạy DINO sau `membership_frozen`, xác minh membership hash rồi mới khóa artifacts và publish `augmented`. | Initialization và sáu main runs. |
 | Kiểm chứng trước main training | Tiny fixtures theo §17 gồm geometry, metrics, grouping, aggregation, leakage và pairing. Ba file init khớp giữa A/B từng seed. Verify config chung, splits và frozen artifacts. | Main training. |
 | Train hoàn tất | Ma trận đúng sáu runs. Tất cả đủ 20 epochs, hash của best checkpoints và validation-at-best đã được khóa. | Final test inference. |
@@ -78,7 +82,7 @@ flowchart TD
 ### Cấu trúc lock và xử lý cập nhật
 
 - `benchmark_lock.json` tiến theo stages `splits → preflight → membership → augmented → initialized → trained → tested → reported`. Ghi benchmark ID/schema, dataset fingerprint, SHA-256 của manifests/mapping/groups/configs/spec/environment và các model artifacts theo stage. Các mốc `initialized`, `trained` và `tested` lần lượt khóa ba `seed_<seed>.pt`, sáu best checkpoints và sáu predictions files. `verify` so file với giá trị đã khóa. Train/eval phải tự gọi xác minh bắt buộc mỗi lần chạy hoặc resume.
-- Ở `splits`, khóa nguyên bytes của original train/val/test, mapping, inventory và toàn bộ assignment/target/budget trong `class_groups.csv`. `accepted_actual` khởi tạo bằng 0. Lưu hash group file ban đầu, hash của các cột group bất biến và hash `split_metadata.json` ban đầu. Ở `augmented`, chỉ cập nhật `accepted_actual` từ accepted manifest và checksum của `class_groups.csv` trong `split_metadata.json`. Giữ bằng chứng hash cũ trong lock và đối chiếu lại hash cột bất biến. Membership/counts gốc, seed, evaluable IDs và các manifest real giữ đồng nhất ở hai mốc.
+- Ở `splits`, khóa nguyên bytes của cleaned train/val/test, cleaning manifest, mapping, inventory và toàn bộ assignment/target/budget trong `class_groups.csv`. `accepted_actual` khởi tạo bằng 0. Lưu hash group file ban đầu, hash của các cột group bất biến và hash `split_metadata.json` ban đầu. Ở `augmented`, chỉ cập nhật `accepted_actual` từ accepted manifest và checksum của `class_groups.csv` trong `split_metadata.json`. Giữ bằng chứng hash cũ trong lock và đối chiếu lại hash cột bất biến. Membership/counts gốc, seed, evaluable IDs và các manifest real giữ đồng nhất ở hai mốc.
 - Luồng diffusion là `automatic QC → diffusion human review → membership_frozen → log_dino_diagnostics(root) → verify accepted membership is unchanged → freeze augmented artifacts → stage augmented`. Trạng thái `membership_frozen` tương ứng với stage `membership` trong `benchmark_lock.json`. Projection canonical của accepted membership gồm ID, source ID, output hashes và quyết định, bỏ các trường DINO khỏi phép hash.
 - `augment-freeze` xác minh stage `membership` và hash đã khóa, rồi gọi `log_dino_diagnostics(root)`. Tính lại projection từ trạng thái sau diagnostics và yêu cầu `membership hash before DINO == membership hash after DINO`. Sai lệch chặn publish. Sau khi xác minh, khóa bytes của `candidates.jsonl` và provenance liên quan, publish `augmentation/manifests/accepted.jsonl`, `augmentation/manifests/qc_summary.json` và `splits/train_augmented.csv`, rồi ghi final lock stage `augmented` sau cùng. Giữ checksum ảnh đã chấp nhận và đối chiếu nội dung file trước khi dùng. Khi cập nhật nhiều file, giữ metadata của lần publish gần nhất cùng checksum bytes đã stage. Lần chạy lại đối chiếu lock, hoàn tất publish đang dở nếu toàn bộ staging hợp lệ hoặc khôi phục bản đã commit. Các incident, shortage và lỗi hạ tầng ghi vào audit hoặc run metadata tương ứng.
 
@@ -86,9 +90,9 @@ flowchart TD
 
 ### Inventory và chống leakage
 
-1. Quét `data/compressed_dataset/`, dùng mỗi thư mục cấp đầu làm class, giữ nguyên tên. Tạo `splits/class_to_idx.json` theo thứ tự Unicode code point, ID 0 đến 123. Ghi `reports/dataset_inventory.csv`, `image_id = SHA256(filepath UTF-8)`, `sha256` trên bytes file và `decoded_pixel_sha256` trên oriented RGB có dimensions. Fingerprint là SHA-256 của inventory canonical sắp theo filepath, bỏ timestamps khỏi nội dung hash.
+1. Chạy `clean` để ghi `data/cleaned_dataset/` và `reports/cleaning_manifest.json` theo §2. Inventory chỉ quét cleaned, giữ nguyên class/path và xác minh hash theo manifest. Tạo `splits/class_to_idx.json` theo thứ tự Unicode code point, ID 0 đến 123. Ghi `reports/dataset_inventory.csv`, `image_id = SHA256(filepath UTF-8)`, `sha256` trên bytes file và `decoded_pixel_sha256` trên oriented RGB có dimensions. Fingerprint là SHA-256 của inventory canonical sắp theo filepath, bỏ timestamps khỏi nội dung hash.
 2. Đối chiếu 49.997 JPEG, 124 classes, hai nhóm resolution 49.942 ảnh `1536×662` và 55 ảnh `1030×703`, United States 12.014 và minimum class size 1 gồm Antarctica. Ghi nhận sai lệch đối chiếu. Dừng preflight khi ảnh không đọc được, số ảnh/classes lệch hoặc mapping mâu thuẫn. Mọi ảnh gốc chỉ được đọc.
-3. Kiểm tra cả file hash và decoded-pixel hash. Duplicate có nhãn mâu thuẫn hoặc nằm khác split làm dừng freeze và được ghi trong `reports/split_audit.json`. Duplicate cùng label trong cùng split được ghi nhận theo policy. Khi có panorama/location metadata, audit near/same panorama và nearby captures. Nếu metadata vắng, báo giới hạn của exact-duplicate audit.
+3. Kiểm tra cả file hash và decoded-pixel hash. Duplicate có nhãn mâu thuẫn hoặc nằm khác split làm dừng freeze và được ghi trong `reports/split_audit.json`. Duplicate cùng label được gom nguyên nhóm trong cùng split, giữ quota từng lớp. Nếu không có cách xếp hợp lệ thì dừng. Khi có panorama/location metadata, audit near/same panorama và nearby captures. Nếu metadata vắng, báo giới hạn của exact-duplicate audit.
 4. Dùng `split_seed=42` và sort từng class theo `(SHA256("split-v1|42|" + filepath), filepath)`. Với `n≥10` lấy `q=max(1,floor(0.1*n+0.5))`, lần lượt `n-2q/q/q`. Với `3≤n≤9` lấy `n-2/1/1`, `n=2` lấy `1/0/1`, `n=1` lấy `1/0/0`. CSV các split theo `(class_id, filepath)`. Freeze evaluable IDs từ real support. Các bước trước final test chỉ dùng holdout cho lập split, checksum, audit leakage cơ học và metadata hỗ trợ metric.
 
 | Split | Real images dự kiến | Evaluable classes dự kiến |
@@ -136,21 +140,21 @@ Lưu final RGB JPEG quality 95, subsampling 0, bỏ EXIF. Decode lại file đã
 
 - `augmentation_type=da_fusion`, `method_variant=sd15_img2img_fixed`. Dùng snapshot bất biến của `stable-diffusion-v1-5/stable-diffusion-v1-5`, `StableDiffusionImg2ImgPipeline`, `DDIMScheduler` lấy config từ snapshot. `strength=0.35`, `guidance_scale=5.0`, `num_inference_steps=40`, `eta=0.0`, batch 1, một ảnh/prompt, FP32, standard attention, `xformers=false`. Log timestep schedule thực tế. Pipeline giữ safety checker của snapshot. `safety_flag` là lý do reject khi checker báo flagged. Phiên bản này dùng img2img fixed, không LoRA, textual inversion, diffusion fine-tuning, mixed precision hay quantization.
 - Copy trọn positive/negative prompt ở §7.2 của spec vào `augmentation/da_fusion/config.yaml`. Chỉ thay `{class_name}` bằng tên thư mục. Giữ prompt và rubric độc lập khỏi val/test và classifier scores.
-- Từ oriented RGB tính `scale=min(384/W,160/H)`, làm tròn half-up và clamp theo §7.2. Bilinear antialias, pad reflection không lặp biên, left/top lấy floor, phần lẻ ở right/bottom. Lưu half-open `source_bbox`, resized size và bốn offsets. Canvas vào/ra VAE `384×160`, shape `1×3×160×384` ở image batch. Crop generated canvas đúng một lần theo `source_bbox` trước khi lưu JPEG content-only.
+- Dùng cleaned train RGB native. Reflection-pad tối thiểu đến bội số 8, phần lẻ ở right/bottom. Lưu source content dimensions, canvas thực, half-open bbox, offsets và output dimensions. Crop đúng một lần để JPEG content-only giữ nguyên native size.
 
-| Source | Resized content | `source_bbox` trên canvas | Output JPEG | Classifier input |
+| Cleaned source | Native-padded canvas | `source_bbox` trên canvas | Output JPEG | Classifier input |
 |---|---|---|---|---|
-| `1536×662` | `371×160` | `[6,0,377,160]` | `371×160` | `3×160×384` |
-| `1030×703` | `234×160` | `[75,0,309,160]` | `234×160` | `3×160×384` |
+| `1536×662` | `1536×664` | `[0,1,1536,663]` | `1536×662` | `3×160×384` |
+| `1030×703` | `1032×704` | `[1,0,1031,703]` | `1030×703` | `3×160×384` |
 
 ### Ranh giới QC, review và diagnostics
 
 | Bước | Quy tắc nghiệm thu |
 |---|---|
 | QC cho cả hai | Decode JPEG RGB hợp lệ, dimensions đúng theo phương pháp, không NaN/Inf. Trên grayscale uint8 vùng content, std `≥5` và phần pixel `≤2` hoặc `≥253` phải `<0.98`. Source, hash, label, transform/config provenance khớp policy. Exact-pixel duplicate với source, original train hoặc synthetic đã accepted bị reject. Collision file/pixel hash với holdout tạo incident và chặn freeze. |
-| QC thêm cho diffusion | Generated canvas đúng `384×160` và bbox hợp lệ. Đo blur trên final decoded content-only file và source resize về content dimensions, đưa cả hai về long edge 384. Laplacian `[[0,1,0],[1,-4,1],[0,1,0]]`, reflect boundary, grayscale `[0,255]`. Điều kiện `var(output) ≥ max(5, 0.5*var(source))`. QC và hashes sử dụng file đã crop theo §7.2. |
-| Người duyệt diffusion | So source train với final JPEG sau crop. Xem road geometry, traffic side, lane markings, signs/text, utility poles, architecture, vegetation, vehicles, Street View appearance và cues quốc gia. Reject dấu/chữ/traffic side đổi, text đọc được bị mất/đổi mà không xác minh được, vật thể/kết cấu bất thường, lỗi generation hoặc `reject_ambiguous`. Lưu reviewer ID, UTC timestamp, rubric version, decision và reason cho mỗi lượt review. |
-| DINO sau chốt membership | Frozen `dino_vits16` với code commit và weights SHA bất biến. So source đã resize về content size với final output decode. Letterbox toàn content `224×224`, bilinear antialias, padding/normalize ImageNet, lấy global embedding L2-normalized. Log cosine source và cosine/ID gần nhất trong các diffusion siblings accepted cùng source, loại chính candidate. Áp dụng cho accepted và rejected đọc được. Thiếu sibling ghi `null` và lý do. Lỗi embedding của từng candidate đọc được ghi `null` cho trường bị ảnh hưởng và `dino_diagnostic_error`. Diagnostics chỉ ghi metadata, giữ nguyên trạng thái accepted/rejected. |
+| QC thêm cho diffusion | Canvas, bbox, padding và output native phải khớp geometry từ cleaned source. Đo blur trên JPEG content-only và cleaned source native, đưa cả hai về long edge 384 chỉ cho metric. Laplacian `[[0,1,0],[1,-4,1],[0,1,0]]`, reflect boundary, grayscale `[0,255]`. Điều kiện `var(output) ≥ max(5, 0.5*var(source))`. QC và hashes sử dụng file đã crop theo §7.2. |
+| Người duyệt diffusion | So cleaned source train với final JPEG sau crop. Xem road geometry, traffic side, lane markings, signs/text, utility poles, architecture, vegetation, vehicles, Street View appearance và cues quốc gia. Reject dấu/chữ/traffic side đổi, text đọc được bị mất/đổi mà không xác minh được, vật thể/kết cấu bất thường, lỗi generation hoặc `reject_ambiguous`. Lưu reviewer ID, UTC timestamp, rubric version, decision và reason cho mỗi lượt review. |
+| DINO sau chốt membership | Frozen `dino_vits16` với code commit và weights SHA bất biến. So cleaned source native với final output decode. Letterbox toàn content `224×224`, bilinear antialias, padding/normalize ImageNet, lấy global embedding L2-normalized. Log cosine source và cosine/ID gần nhất trong các diffusion siblings accepted cùng source, loại chính candidate. Áp dụng cho accepted và rejected đọc được. Thiếu sibling ghi `null` và lý do. Lỗi embedding của từng candidate đọc được ghi `null` cho trường bị ảnh hưởng và `dino_diagnostic_error`. Diagnostics chỉ ghi metadata, giữ nguyên trạng thái accepted/rejected. |
 
 Reason enums cần lập theo §8.2, gồm `unreadable`, `invalid_rgb`, `invalid_dimensions`, `blank`, `invalid_source`, `invalid_provenance`, `blur`, `exact_duplicate`, `geographic_cue_changed`, `generation_artifact`, `safety_flag`, `reject_ambiguous`. `blur` và visual review reasons chỉ thuộc diffusion. DINO scores chỉ dùng phân tích, không có hard threshold hoặc rejection reason tương ứng.
 
@@ -166,6 +170,7 @@ Reviewer tải `reviews.jsonl` với đúng schema của `review-import` ở T01
 
 | Artifact | Trường chủ chốt và kiểm chứng |
 |---|---|
+| `reports/cleaning_manifest.json` | ID, cleaning policy, class/path raw và cleaned, dimensions, bbox và hash file/pixel của cả hai. |
 | `reports/dataset_inventory.csv`, `reports/split_audit.json` | Inventory `image_id,filepath,class_name,class_id,width,height,bytes,sha256,decoded_pixel_sha256,readable`. Audit ghi baseline, lỗi đọc ảnh, duplicate/leakage, metadata địa lý nếu có và counts/support thực tế. |
 | `splits/{train,val,test}.csv`, `splits/class_to_idx.json`, `splits/class_groups.csv` | CSV `image_id,filepath,class_name,class_id,split,sha256,decoded_pixel_sha256,is_synthetic`. Tất cả original rows có `is_synthetic=false`. Mapping 124 IDs nối tiếp. Groups dùng `class_id,class_name,original_train_count,group,target,required_accepted,accepted_actual`. |
 | `splits/split_metadata.json` | Schema version, seed, hash order/tie-break, allocation policy, dataset fingerprint, class/split counts, evaluable IDs và từng manifest/map/group SHA. |
@@ -179,16 +184,17 @@ Reviewer tải `reviews.jsonl` với đúng schema của `review-import` ở T01
 
 | Nhóm | Trường |
 |---|---|
-| Identity và source | `synthetic_id`, `synthetic_path`, `source_image_id`, `source_image_path`, `source_sha256`, `class_name`, `class_id`, `source_split` |
+| Identity và source | `benchmark_id`, `synthetic_id`, `synthetic_path`, `source_image_id`, `source_image_path`, `source_sha256`, `class_name`, `class_id`, `source_split` |
 | Generation | `augmentation_type`, `method_variant`, `augmentation_parameters`, `augmentation_seed`, `generation_seed`, `attempt_index`, `generation_timestamp` |
+| Geometry diffusion | `source_content_width`, `source_content_height`, `generation_canvas_width`, `generation_canvas_height`, `source_bbox`, `padding_mode`, `padding`, `output_content_only` theo §7.2 |
 | QC và review | `filter_status`, `filter_reason`, `accepted`, `rejection_reason`, `qc_scores`, `reviewer_id`, `review_timestamp` |
 | DINO | `dino_source_similarity`, `dino_nearest_sibling_similarity`, `dino_nearest_sibling_id`, `dino_diagnostic_error` |
 | Output và lock | `output_width`, `output_height`, `output_sha256`, `output_pixel_sha256`, `config_sha256`, `environment_lock_sha256` |
 
 | Giao diện nội bộ | Đầu vào và kết quả |
 |---|---|
-| `build_inventory(root)` → `build_split(root)` | `root` là project path. Split dùng inventory/mapping đã tạo và xuất ba real manifests cùng audit, groups và lock. |
-| `prepare_generation_canvas(rgb)` → `crop_generated_content(canvas, source_bbox)` | Geometry đầu vào trả canvas và metadata bbox/padding. Hàm crop nhận canvas VAE đã decode và bbox theo đúng hệ tọa độ canvas, trả RGB content sẽ lưu JPEG. |
+| `clean_dataset(root)` → `build_inventory(root)` → `build_split(root)` | `root` là project path. Split dùng inventory/mapping đã tạo và xuất ba real manifests cùng audit, groups và lock. |
+| `prepare_generation_canvas(rgb)` → `crop_generated_content(canvas, geometry)` | Đầu vào là cleaned RGB native. Hàm crop đối chiếu kích thước canvas đã decode và geometry rồi trả RGB native content để lưu JPEG. |
 | `check_candidate(root, candidate, source, config, hash_index)` | Candidate row và source row đã xác minh, config phương pháp, hash index của real splits và accepted outputs. Trả kết quả automatic QC cùng reason, scores và thông tin incident nếu va chạm holdout. Workflow chịu trách nhiệm chuyển trạng thái và lưu review. |
 | `evaluate_predictions(rows, evaluable_ids, class_groups)` | Prediction rows gồm true/predicted IDs và top-5 IDs. Trả metrics tổng, full confusion, per-class rows và group metrics. Validation và final test dùng chung logic này. |
 | `load_test_predictions(root, condition, seed)` | Đọc predictions đã xác minh theo `image_id` và run identity, dùng lại cho `build_report(root)`. Báo cáo chỉ aggregate khi lock đạt `tested`. |
@@ -197,7 +203,7 @@ Reviewer tải `reviews.jsonl` với đúng schema của `review-import` ở T01
 
 ### CUDA preflight và tái lập
 
-- Resolve SD model commit và hash weights, tokenizer, VAE, scheduler config và snapshot artifacts cần nạp. Pin DINO code commit/weights và EfficientNet pretrained SHA. Dùng snapshot local theo immutable identities khi chạy. Thử img2img thật với source train. Xác minh precision/backend đang dùng thực tế, batch 1, input và decoded canvas `384×160`, crop và kích thước content-only. Ghi các thuộc tính đã kiểm, hardware và kết quả probe trong phần preflight của lock. Preflight output tách khỏi candidate log và quota.
+- Resolve SD model commit và hash weights, tokenizer, VAE, scheduler config và snapshot artifacts cần nạp. Pin DINO code commit/weights và EfficientNet pretrained SHA. Dùng snapshot local theo immutable identities khi chạy. Thử img2img thật trên cleaned train source có padded canvas lớn nhất. Xác minh FP32, standard attention, batch 1, native pad /8 và crop về native size. CUDA OOM làm dừng preflight và báo geometry. Ghi các thuộc tính đã kiểm, hardware và kết quả probe trong phần preflight của lock. Preflight output tách khỏi candidate log và quota.
 - Chọn batch size một lần, thử `128 → 64 → 32 → 16 → 8 → 4 → 2` chỉ khi CUDA OOM. Dùng input shape thật, EfficientNet-B0 FP32, forward/backward/AdamW step để cấp phát state. Lỗi ngoài OOM hoặc OOM ở 2 làm preflight fail. Reset model/optimizer/RNG sau thử, khóa batch size hiệu lực trước generation. Nếu main run OOM, ghi sự cố và phục hồi đúng cấu hình hoặc áp dụng policy phiên bản mới của §11.1 cho cả comparison.
 - `CUBLAS_WORKSPACE_CONFIG=:4096:8` trước CUDA init, `torch.use_deterministic_algorithms(True)`, cuDNN benchmark off/deterministic on, TF32 off ở matmul/cuDNN. Lỗi deterministic làm preflight dừng. Set `PYTHONHASHSEED` khi gọi subprocess từng seed, seed Python/NumPy/PyTorch CPU/CUDA, DataLoader generator và worker seed `initial_seed % 2**32`. Evaluation dùng RNG riêng. GPU model, driver và software lock giống nhau giữa sáu run.
 
@@ -245,11 +251,12 @@ Best/last checkpoint lưu epoch, model/optimizer/scheduler state (kể cả step
 
 ## 9. Hướng dẫn chạy và ưu tiên kiểm chứng
 
-Các lệnh dưới đây là **giao diện đích sau implementation**, chạy tại project root với dataset, model snapshots và GPU tương ứng. Khi `augment` trả `review_required`, chạy `review-export`, copy `augmentation/review/` sang máy reviewer và mở `index.html` offline. Chép `reviews.jsonl` đã tải về server vào đường dẫn `--input` bên dưới. Import rồi chạy lại `augment`, lặp vòng review đến `membership_frozen`. `augment-freeze` gọi diagnostics, kiểm tra membership hash và publish `augmented` theo §3.
+Chạy ở run root v1.2 mới với raw JPEG, model snapshots và GPU. Giữ runtime artifacts v1.1 ở root riêng. Khi `augment` trả `review_required`, chạy `review-export`, copy `augmentation/review/` sang máy reviewer và mở `index.html` offline. Chép `reviews.jsonl` đã tải về server vào đường dẫn `--input` bên dưới. Import rồi chạy lại `augment`, lặp vòng review đến `membership_frozen`. `augment-freeze` gọi diagnostics, kiểm tra membership hash và publish `augmented` theo §3.
 
 ```bash
 python -m pip install -e '.[dev]'
 python -m pytest -q
+python -m geoguessr_benchmark --root . clean
 python -m geoguessr_benchmark --root . inventory
 python -m geoguessr_benchmark --root . split
 python -m geoguessr_benchmark --root . verify --stage splits

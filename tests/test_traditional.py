@@ -1,15 +1,18 @@
 from PIL import Image
 import numpy as np
+import pytest
 
 from geoguessr_benchmark.augmentation.traditional import generate_traditional
 
 
-def test_traditional_is_deterministic_and_preserves_size():
-    source = Image.fromarray(np.random.default_rng(4).integers(0, 256, (40,60,3), dtype=np.uint8))
+@pytest.mark.parametrize("size", [(1536, 662), (1030, 703)])
+def test_traditional_is_deterministic_and_preserves_size(size):
+    width, height = size
+    source = Image.fromarray(np.random.default_rng(4).integers(0, 256, (height,width,3), dtype=np.uint8))
     attempt = {"generation_seed": 1121161069}
     first, params = generate_traditional(source, attempt, {})
     again, params2 = generate_traditional(source, attempt, {})
-    assert first.size == (60, 40) and first.mode == "RGB"
+    assert first.size == size and first.mode == "RGB"
     assert first.tobytes() == again.tobytes()
     assert params == params2
     assert len(params) in (1,2)

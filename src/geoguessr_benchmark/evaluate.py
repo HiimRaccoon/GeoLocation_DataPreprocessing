@@ -67,7 +67,7 @@ def load_test_predictions(root, condition, seed):
 
 def _run_test_inference(root, condition, seed, lock, manifest):
     import torch
-    from .artifacts import _resolve_artifact, sha256_file
+    from .artifacts import _resolve_artifact, resolve_cleaned_image, sha256_file
     from .classifier import build_model
     from .config import load_config
     from .preflight import _configure_determinism, verify_runtime
@@ -82,7 +82,7 @@ def _run_test_inference(root, condition, seed, lock, manifest):
     model.load_state_dict(checkpoint["model"], strict=True)
     model = model.to(device).eval()
     for row in manifest:
-        path = _resolve_artifact(root, row["filepath"])
+        path = resolve_cleaned_image(root, row["filepath"])
         if not path.is_file() or sha256_file(path) != row["sha256"]:
             raise ValueError("test image does not match its locked manifest")
     loader = torch.utils.data.DataLoader(_ManifestDataset(root,manifest),batch_size=config["batch_size_effective"],shuffle=False,

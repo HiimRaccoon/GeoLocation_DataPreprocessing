@@ -64,3 +64,43 @@ def test_preflight_publishes_only_after_both_probes(tmp_path, monkeypatch):
     assert result["stage"]=="preflight"
     assert verify_stage(tmp_path,"preflight")
     assert result["batch_size_effective"]==128
+
+
+def test_native_diffusion_probe_uses_largest_train_canvas_and_fails_on_oom(tmp_path, monkeypatch):
+    from PIL import Image
+    from geoguessr_benchmark.artifacts import atomic_write_bytes, canonical_csv_bytes, sha256_file
+    from geoguessr_benchmark.augmentation import diffusion
+    from geoguessr_benchmark.preflight import _diffusion_probe
+
+    rows, inventory = [], []
+    for filename, size in (("a-small", (1030, 703)), ("z-large", (1536, 662))):
+        name = f"data/cleaned_dataset/A/{filename}.jpg"
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", size, "orange").save(path)
+        rows.append({"filepath": name, "sha256": sha256_file(path), "split": "train",
+                     "is_synthetic": False, "class_name": "A"})
+        inventory.append({"filepath": name, "sha256": sha256_file(path), "width": size[0], "height": size[1]})
+    atomic_write_bytes(tmp_path / "splits/train.csv", canonical_csv_bytes(rows, list(rows[0])))
+    atomic_write_bytes(tmp_path / "reports/dataset_inventory.csv", canonical_csv_bytes(inventory, list(inventory[0])))
+    monkeypatch.setattr(diffusion, "load_pinned_diffusion", lambda *args: object())
+    calls = []
+
+    def generate(image, *_):
+        calls.append(image.size)
+        return image, {**diffusion.native_generation_geometry(*image.size), "precision": "float32"}
+
+    monkeypatch.setattr(diffusion, "generate_diffusion", generate)
+    details = _diffusion_probe(tmp_path, {}, {})
+    assert calls == [(1536, 662)]
+    assert details["probe_source_path"] == rows[1]["filepath"]
+    assert (details["generation_canvas_width"], details["generation_canvas_height"]) == (1536, 664)
+
+    def oom(image, *_):
+        calls.append(image.size)
+        raise torch.OutOfMemoryError("GPU exhausted")
+
+    monkeypatch.setattr(diffusion, "generate_diffusion", oom)
+    with pytest.raises(ValueError, match="CUDA OOM.*FP32.*1536x664"):
+        _diffusion_probe(tmp_path, {}, {})
+    assert calls == [(1536, 662)] * 2

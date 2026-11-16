@@ -7,7 +7,9 @@ from PIL import Image
 import pytest
 
 from geoguessr_benchmark.artifacts import _REQUIRED, atomic_write_bytes, canonical_json_bytes, canonical_jsonl_bytes, sha256_file, verify_stage
-from geoguessr_benchmark.images import decode_rgb, pixel_sha256, letterbox_geometry
+from geoguessr_benchmark.images import decode_rgb, pixel_sha256
+from geoguessr_benchmark.augmentation.diffusion import native_generation_geometry
+from geoguessr_benchmark.augmentation.review import RUBRIC
 from geoguessr_benchmark.augmentation.policy import plan_candidate
 from geoguessr_benchmark.augmentation.diagnostics import membership_sha256
 from geoguessr_benchmark.augmentation.workflow import freeze_augmented
@@ -33,15 +35,15 @@ def test_freeze_checks_dino_membership_then_publishes_union(tmp_path, monkeypatc
         attempt = plan_candidate("da_fusion", 0, i, train)
         src = next(r for r in train if r["image_id"] == attempt["source_image_id"])
         original = decode_rgb(tmp_path / src["filepath"])
-        geometry = letterbox_geometry(original.width,original.height,384,160)
+        geometry = native_generation_geometry(*original.size)
         name = f'data/augmented_dataset/da_fusion/A/{attempt["synthetic_id"]}.jpg'
         output = tmp_path / name
         output.parent.mkdir(parents=True,exist_ok=True)
-        Image.fromarray(rng.integers(0,256,(geometry["height"], geometry["width"],3),dtype=np.uint8)).save(output,quality=95,subsampling=0)
-        candidate = dict(attempt, synthetic_path=name, source_sha256=src["sha256"], class_name="A", method_variant="sd15_img2img_fixed", accepted=True, filter_status="accepted", source_bbox=geometry["source_bbox"], generation_canvas_width=384, generation_canvas_height=160, resized_source_width=geometry["width"], resized_source_height=geometry["height"], output_content_only=True, safety_flag=False, output_sha256=sha256_file(output), output_pixel_sha256=pixel_sha256(decode_rgb(output)))
-        candidate.update({"reviewer_id":"reviewer","review_timestamp":"2026-11-14T00:00:00Z","review_rubric_version":"geographic-cues-v1","review_reason":None})
+        Image.fromarray(rng.integers(0,256,(original.height, original.width,3),dtype=np.uint8)).save(output,quality=95,subsampling=0)
+        candidate = dict(attempt, **geometry, synthetic_path=name, source_sha256=src["sha256"], class_name="A", method_variant="sd15_img2img_fixed", accepted=True, filter_status="accepted", safety_flag=False, output_sha256=sha256_file(output), output_pixel_sha256=pixel_sha256(decode_rgb(output)))
+        candidate.update({"reviewer_id":"reviewer","review_timestamp":"2026-11-14T00:00:00Z","review_rubric_version":RUBRIC,"review_reason":None})
         candidates.append(candidate)
-        decisions.append({"synthetic_id":candidate["synthetic_id"], "source_sha256":candidate["source_sha256"], "output_sha256":candidate["output_sha256"], "reviewer_id":"reviewer", "review_timestamp":"2026-11-14T00:00:00Z", "rubric_version":"geographic-cues-v1", "decision":"accept", "reason":None})
+        decisions.append({"synthetic_id":candidate["synthetic_id"], "source_sha256":candidate["source_sha256"], "output_sha256":candidate["output_sha256"], "reviewer_id":"reviewer", "review_timestamp":"2026-11-14T00:00:00Z", "rubric_version":RUBRIC, "decision":"accept", "reason":None})
     candidates_path=tmp_path/"augmentation/manifests/candidates.jsonl"
     atomic_write_bytes(candidates_path,canonical_jsonl_bytes(candidates))
     atomic_write_bytes(tmp_path/"augmentation/manifests/reviews.jsonl",canonical_jsonl_bytes(decisions))
@@ -143,10 +145,10 @@ def test_augment_resume_from_offline_review_to_membership(tmp_path, monkeypatch)
     monkeypatch.setattr(config_module,"load_config",lambda root:{"benchmark":{},"traditional":{},"da_fusion":DIFF_CONFIG})
     monkeypatch.setattr(workflow,"load_pinned_diffusion",lambda root,snapshot:object())
     def fake_generate(source, attempt, config, snapshot):
-        g=letterbox_geometry(source.width,source.height,384,160)
+        g=native_generation_geometry(*source.size)
         rng=np.random.default_rng(attempt["generation_seed"])
-        img=Image.fromarray(rng.integers(0,256,(g["height"],g["width"],3),dtype=np.uint8))
-        return img, {**fixture_provenance(attempt["class_name"]), "generation_canvas_width":384,"generation_canvas_height":160,"source_bbox":g["source_bbox"],"resized_source_width":g["width"],"resized_source_height":g["height"],"output_content_only":True,"safety_flag":False}
+        img=Image.fromarray(rng.integers(0,256,(source.height,source.width,3),dtype=np.uint8))
+        return img, {**fixture_provenance(attempt["class_name"]), **g, "safety_flag":False}
     monkeypatch.setattr(workflow,"generate_diffusion",fake_generate)
     assert main(["--root",str(tmp_path),"augment"]) == 0
     candidates_path=tmp_path/"augmentation/manifests/candidates.jsonl"
@@ -195,8 +197,8 @@ def test_augment_records_holdout_incident_and_attempt(tmp_path, monkeypatch):
 
 def test_review_binding_requires_matching_metadata_and_utc_timestamp():
     from geoguessr_benchmark.augmentation.workflow import validate_review_binding
-    row={"source_sha256":"s","output_sha256":"o","reviewer_id":"r","review_timestamp":"2026-11-14T00:00:00Z","review_rubric_version":"geographic-cues-v1","review_reason":None}
-    review={"source_sha256":"s","output_sha256":"o","reviewer_id":"r","review_timestamp":"2026-11-14T00:00:00Z","rubric_version":"geographic-cues-v1","decision":"accept","reason":None}
+    row={"source_sha256":"s","output_sha256":"o","reviewer_id":"r","review_timestamp":"2026-11-14T00:00:00Z","review_rubric_version":RUBRIC,"review_reason":None}
+    review={"source_sha256":"s","output_sha256":"o","reviewer_id":"r","review_timestamp":"2026-11-14T00:00:00Z","rubric_version":RUBRIC,"decision":"accept","reason":None}
     assert validate_review_binding(row,review)
     assert not validate_review_binding(dict(row,reviewer_id="other"),review)
     assert not validate_review_binding(dict(row,review_timestamp="2026-11-14T00:00:00"),dict(review,review_timestamp="2026-11-14T00:00:00"))

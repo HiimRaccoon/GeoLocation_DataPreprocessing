@@ -8,9 +8,11 @@ from pathlib import Path, PurePosixPath
 import tempfile
 
 STAGES = ("splits", "preflight", "membership", "augmented", "initialized", "trained", "tested", "reported")
-BENCHMARK_ID = "geoguessr50k_country_augmentation_v1_1"
+BENCHMARK_ID = "geoguessr50k_country_augmentation_v1_2"
+CLEANED_DATASET = "data/cleaned_dataset"
+CLEANING_MANIFEST = "reports/cleaning_manifest.json"
 _REQUIRED = {
-    "splits": {"docs/specs.md", "reports/dataset_inventory.csv", "reports/split_audit.json", "splits/class_to_idx.json", "splits/train.csv", "splits/val.csv", "splits/test.csv", "splits/class_groups.csv", "splits/split_metadata.json"},
+    "splits": {CLEANING_MANIFEST, "docs/specs.md", "reports/dataset_inventory.csv", "reports/split_audit.json", "splits/class_to_idx.json", "splits/train.csv", "splits/val.csv", "splits/test.csv", "splits/class_groups.csv", "splits/split_metadata.json"},
     "preflight": {"configs/benchmark.yaml", "augmentation/traditional/config.yaml", "augmentation/da_fusion/config.yaml", "environment.lock.txt"},
     "membership": {"augmentation/manifests/candidates.jsonl"},
     "augmented": {"augmentation/manifests/accepted.jsonl", "augmentation/manifests/qc_summary.json", "splits/train_augmented.csv"},
@@ -82,16 +84,40 @@ def _resolve_artifact(root, name):
     return resolved
 
 
-def verify_stage(root, stage):
-    if stage not in STAGES:
-        raise ValueError(f"unknown stage: {stage}")
-    root = Path(root).resolve()
+def read_benchmark_lock(root):
     try:
         lock = json.loads((root / "benchmark_lock.json").read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise ValueError("missing or invalid benchmark lock") from error
-    if lock.get("schema_version") != 1 or lock.get("benchmark_id") != BENCHMARK_ID or lock.get("stage") not in STAGES:
+    if (not isinstance(lock, dict) or lock.get("schema_version") != 1
+            or lock.get("benchmark_id") != BENCHMARK_ID or lock.get("stage") not in STAGES):
         raise ValueError("invalid benchmark lock identity or stage")
+    return lock
+
+
+def resolve_cleaned_image(root, name):
+    path = _resolve_artifact(root, name)
+    if not name.startswith(CLEANED_DATASET + "/") or not path.is_relative_to(root / CLEANED_DATASET):
+        raise ValueError(f"real benchmark image is outside the cleaned dataset: {name}")
+    return path
+
+
+def resolve_manifest_image(root, row):
+    if row["is_synthetic"] == "false":
+        return resolve_cleaned_image(root, row["filepath"])
+    name = row["filepath"]
+    path = _resolve_artifact(root, name)
+    if (row["is_synthetic"] != "true" or row["split"] != "train"
+            or not name.startswith("data/augmented_dataset/") or not path.is_relative_to(root / "data/augmented_dataset")):
+        raise ValueError(f"invalid synthetic manifest path or split: {name}")
+    return path
+
+
+def verify_stage(root, stage):
+    if stage not in STAGES:
+        raise ValueError(f"unknown stage: {stage}")
+    root = Path(root).resolve()
+    lock = read_benchmark_lock(root)
     current = STAGES.index(lock["stage"])
     if current < STAGES.index(stage):
         raise ValueError("required stage not published")

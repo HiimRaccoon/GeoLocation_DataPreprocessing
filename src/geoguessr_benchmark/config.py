@@ -1,9 +1,10 @@
 """Read and validate the frozen benchmark configuration."""
 from pathlib import Path
 import yaml
+from .artifacts import BENCHMARK_ID
 
 _BENCHMARK = {
-    "benchmark_id": "geoguessr50k_country_augmentation_v1_1", "conditions": ["original", "augmented"],
+    "benchmark_id": BENCHMARK_ID, "conditions": ["original", "augmented"],
     "model": "efficientnet_b0", "weights": "IMAGENET1K_V1", "num_classes": 124,
     "input_width": 384, "input_height": 160, "optimizer": "AdamW", "learning_rate": 0.0003,
     "weight_decay": 0.0001, "betas": [0.9, 0.999], "eps": 1e-8, "epochs": 20,
@@ -34,7 +35,8 @@ _DIFFUSION = {
     "diffusion_model": "stable-diffusion-v1-5/stable-diffusion-v1-5", "pipeline": "StableDiffusionImg2ImgPipeline",
     "scheduler": "DDIMScheduler", "scheduler_source": "diffusion_model_scheduler_config", "eta": 0.0,
     "strength": 0.35, "guidance_scale": 5.0, "num_inference_steps": 40, "num_images_per_prompt": 1,
-    "generation_batch_size": 1, "generation_canvas_width": 384, "generation_canvas_height": 160,
+    "generation_batch_size": 1, "generation_resolution_policy": "native_pad_to_multiple",
+    "generation_multiple": 8, "generation_padding_mode": "reflect", "generation_downsample": False,
     "precision": "float32", "attention_backend": "standard", "xformers": False, "textual_inversion": False,
     "lora": False, "diffusion_finetuning": False, "output_format": "jpeg", "output_quality": 95,
     "output_subsampling": 0, "attempt_cap_multiplier": 10,

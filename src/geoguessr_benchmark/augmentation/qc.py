@@ -5,9 +5,9 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from ..artifacts import _resolve_artifact, canonical_json_bytes, sha256_file, verify_stage
-from ..images import decode_rgb, letterbox_geometry, pixel_sha256
-from .diffusion import canonical_scheduler_config
+from ..artifacts import _resolve_artifact, canonical_json_bytes, resolve_cleaned_image, sha256_file, verify_stage
+from ..images import decode_rgb, pixel_sha256
+from .diffusion import canonical_scheduler_config, native_generation_geometry
 from .policy import plan_candidate
 
 
@@ -72,7 +72,10 @@ def check_candidate(root, candidate, source, config, hash_index):
         candidate.get("source_image_path") != source["filepath"] or candidate.get("source_sha256") != source["sha256"] or
         candidate.get("class_name") != source["class_name"] or int(candidate.get("class_id", -1)) != int(source["class_id"])):
         return fail("invalid_source")
-    source_path = _resolve_artifact(root, source["filepath"])
+    try:
+        source_path = resolve_cleaned_image(root, source["filepath"])
+    except ValueError:
+        return fail("invalid_source")
     if not source_path.is_file() or sha256_file(source_path) != source["sha256"]:
         return fail("invalid_source")
     method = candidate.get("augmentation_type")
@@ -109,11 +112,13 @@ def check_candidate(root, candidate, source, config, hash_index):
         if rgb.size != original.size:
             return fail("invalid_dimensions")
     else:
-        geometry = letterbox_geometry(original.width, original.height, 384, 160)
-        if (candidate.get("source_bbox") != geometry["source_bbox"] or
-            candidate.get("generation_canvas_width") != 384 or candidate.get("generation_canvas_height") != 160 or
-            candidate.get("resized_source_width") != geometry["width"] or candidate.get("resized_source_height") != geometry["height"] or
-            candidate.get("output_content_only") is not True or rgb.size != (geometry["width"], geometry["height"])):
+        geometry = native_generation_geometry(*original.size)
+        actual = {key: candidate.get(key) for key in geometry}
+        try:
+            valid_geometry = canonical_json_bytes(actual) == canonical_json_bytes(geometry)
+        except (TypeError, ValueError):
+            valid_geometry = False
+        if not valid_geometry or rgb.size != original.size:
             return fail("invalid_dimensions")
     gray = np.asarray(rgb.convert("L"), dtype=np.float64)
     thresholds = config.get("qc", {"grayscale_std_min":5.0, "saturation_fraction_max":.98,
@@ -122,8 +127,7 @@ def check_candidate(root, candidate, source, config, hash_index):
     if not valid_intensity:
         return fail("blank", scores)
     if method == "da_fusion":
-        source_content = original.resize(rgb.size, Image.Resampling.BILINEAR)
-        source_blur, output_blur = _blur(source_content), _blur(rgb)
+        source_blur, output_blur = _blur(original), _blur(rgb)
         scores.update({"source_laplacian_variance": source_blur, "output_laplacian_variance": output_blur})
         if output_blur < max(thresholds["blur_min"], thresholds["blur_source_ratio"] * source_blur):
             return fail("blur", scores)

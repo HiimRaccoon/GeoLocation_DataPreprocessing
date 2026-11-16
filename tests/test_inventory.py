@@ -6,16 +6,18 @@ from PIL import Image
 import pytest
 
 from geoguessr_benchmark.inventory import build_inventory
+from cleaned_fixture import seal_cleaned_fixture
 
 
 def image(path, color):
     path.parent.mkdir(parents=True, exist_ok=True)
-    Image.new("RGB", (8, 5), color).save(path, quality=95)
+    Image.new("RGB", (1030, 703), color).save(path, quality=95)
 
 
 def test_inventory_is_canonical_for_unicode_paths_and_checks_baseline(tmp_path):
-    image(tmp_path / "data/compressed_dataset/Việt Nam/b.jpg", (30, 40, 60))
-    image(tmp_path / "data/compressed_dataset/A/a.jpg", (190, 40, 60))
+    image(tmp_path / "data/cleaned_dataset/Việt Nam/b.jpg", (30, 40, 60))
+    image(tmp_path / "data/cleaned_dataset/A/a.jpg", (190, 40, 60))
+    seal_cleaned_fixture(tmp_path)
     baseline = {"images": 2, "classes": 2}
     build_inventory(tmp_path, baseline=baseline)
     mapping = json.loads((tmp_path / "splits/class_to_idx.json").read_text(encoding="utf-8"))
@@ -23,17 +25,21 @@ def test_inventory_is_canonical_for_unicode_paths_and_checks_baseline(tmp_path):
     with (tmp_path / "reports/dataset_inventory.csv").open(encoding="utf-8", newline="") as file:
         rows = list(csv.DictReader(file))
     assert [r["class_id"] for r in rows] == ["0", "1"]
-    assert rows[1]["image_id"] == hashlib.sha256("data/compressed_dataset/Việt Nam/b.jpg".encode()).hexdigest()
+    assert rows[1]["image_id"] == hashlib.sha256("data/cleaned_dataset/Việt Nam/b.jpg".encode()).hexdigest()
     with pytest.raises(ValueError, match="baseline"):
         build_inventory(tmp_path, baseline={"images": 3, "classes": 2})
+    (tmp_path / "splits/class_to_idx.json").write_text(json.dumps({"A": 1, "Việt Nam": 0}), encoding="utf-8")
+    with pytest.raises(ValueError, match="mapping"):
+        build_inventory(tmp_path, baseline=baseline)
 
 
 def test_conflicting_duplicates_and_unreadable_images_fail_closed(tmp_path):
-    source = tmp_path / "data/compressed_dataset/A/a.jpg"
+    source = tmp_path / "data/cleaned_dataset/A/a.jpg"
     image(source, (10, 20, 30))
-    target = tmp_path / "data/compressed_dataset/B/b.jpg"
+    target = tmp_path / "data/cleaned_dataset/B/b.jpg"
     target.parent.mkdir(parents=True)
     target.write_bytes(source.read_bytes())
+    seal_cleaned_fixture(tmp_path)
     with pytest.raises(ValueError, match="duplicate"):
         build_inventory(tmp_path, baseline={"images": 2, "classes": 2})
     audit = json.loads((tmp_path / "reports/split_audit.json").read_text(encoding="utf-8"))
@@ -44,13 +50,14 @@ def test_conflicting_duplicates_and_unreadable_images_fail_closed(tmp_path):
 
 
 def test_distinct_jpeg_bytes_with_same_pixels_detect_label_conflict(tmp_path):
-    source = tmp_path / "data/compressed_dataset/A/a.jpg"
-    target = tmp_path / "data/compressed_dataset/B/b.jpg"
+    source = tmp_path / "data/cleaned_dataset/A/a.jpg"
+    target = tmp_path / "data/cleaned_dataset/B/b.jpg"
     image(source,(40,80,120))
     target.parent.mkdir(parents=True)
     # Appending bytes after the JPEG end marker preserves decoded RGB.
     target.write_bytes(source.read_bytes()+b"metadata-after-eoi")
     assert source.read_bytes()!=target.read_bytes()
+    seal_cleaned_fixture(tmp_path)
     with pytest.raises(ValueError,match="duplicate"):
         build_inventory(tmp_path,baseline={"images":2,"classes":2})
     audit=json.loads((tmp_path/"reports/split_audit.json").read_text(encoding="utf-8"))

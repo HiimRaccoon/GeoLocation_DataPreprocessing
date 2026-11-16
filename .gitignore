@@ -12,3 +12,12 @@ data/
 *.ckpt
 .cache/
 models/
+/reports/
+/splits/
+/logs/
+/runs/
+/initializations/
+/augmentation/manifests/
+/augmentation/review*/
+/benchmark_lock.json
+/environment.lock.txt

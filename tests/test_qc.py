@@ -2,6 +2,7 @@ import csv
 
 import numpy as np
 from PIL import Image
+import pytest
 
 from geoguessr_benchmark.artifacts import sha256_file
 from geoguessr_benchmark.images import decode_rgb, pixel_sha256
@@ -9,18 +10,23 @@ from geoguessr_benchmark.inventory import build_inventory
 from geoguessr_benchmark.split import build_split
 from geoguessr_benchmark.augmentation.qc import check_candidate
 from geoguessr_benchmark.augmentation.policy import plan_candidate
+from geoguessr_benchmark.cleaning import HUD_BOXES
+from cleaned_fixture import seal_cleaned_fixture
 
 
 def setup_fixture(root):
     (root / "docs").mkdir(parents=True, exist_ok=True)
     (root / "docs/specs.md").write_text("fixture spec", encoding="utf-8")
-    directory = root / "data/compressed_dataset/A"
+    directory = root / "data/cleaned_dataset/A"
     directory.mkdir(parents=True)
     rng = np.random.default_rng(42)
     for i in range(4):
         Image.fromarray(rng.integers(0,256,(40,60,3), dtype=np.uint8)).save(directory / f"{i}.jpg")
-    build_inventory(root, baseline={"images":4,"classes":1})
-    build_split(root)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setitem(HUD_BOXES, (60, 40), ((0, 0, 1, 1),))
+        seal_cleaned_fixture(root)
+        build_inventory(root, baseline={"images":4,"classes":1})
+        build_split(root)
     with (root / "splits/train.csv").open(encoding="utf-8", newline="") as file:
         train = list(csv.DictReader(file))
         source = train[0]
@@ -42,6 +48,27 @@ def test_traditional_qc_has_no_review_or_blur_gate(tmp_path):
     assert "blur" not in result["scores"]
 
 
+def test_native_diffusion_qc_rejects_stale_geometry_and_wrong_jpeg_dimensions(tmp_path):
+    from geoguessr_benchmark.augmentation.diffusion import native_generation_geometry
+
+    _, candidate = setup_fixture(tmp_path)
+    with (tmp_path / "splits/train.csv").open(encoding="utf-8", newline="") as file:
+        train = list(csv.DictReader(file))
+    attempt = plan_candidate("da_fusion", 0, 0, train)
+    source = next(row for row in train if row["image_id"] == attempt["source_image_id"])
+    candidate.update(attempt)
+    candidate.update(native_generation_geometry(60, 40))
+    candidate.update(source_sha256=source["sha256"], method_variant="sd15_img2img_fixed")
+    assert check_candidate(tmp_path, candidate, source, {}, {})["passed"]
+    for change in ({"generation_canvas_width":384, "generation_canvas_height":160},
+                   {"source_bbox":[0, 0, 60, 40]}, {"padding":{}}, {"output_width":61}):
+        assert check_candidate(tmp_path, dict(candidate, **change), source, {}, {})["reason"] == "invalid_dimensions"
+    path = tmp_path / candidate["synthetic_path"]
+    decode_rgb(path).crop((0, 0, 59, 40)).save(path)
+    candidate.update(output_sha256=sha256_file(path), output_pixel_sha256=pixel_sha256(decode_rgb(path)))
+    assert check_candidate(tmp_path, candidate, source, {}, {})["reason"] == "invalid_dimensions"
+
+
 def test_holdout_collision_is_incident_and_prevents_acceptance(tmp_path):
     source, candidate = setup_fixture(tmp_path)
     index = {"holdout_pixel": {candidate["output_pixel_sha256"]}}
@@ -49,6 +76,18 @@ def test_holdout_collision_is_incident_and_prevents_acceptance(tmp_path):
     assert not result["passed"]
     assert result["reason"] == "exact_duplicate"
     assert result["incident"] == "holdout_collision"
+
+
+def test_qc_rejects_exact_train_and_accepted_matches_and_corrupt_output(tmp_path):
+    source, candidate = setup_fixture(tmp_path)
+    result = check_candidate(tmp_path, candidate, source, {}, {"accepted_file": {candidate["output_sha256"]}})
+    assert result["reason"] == "exact_duplicate" and result["incident"] is None
+    path = tmp_path / candidate["synthetic_path"]
+    path.write_bytes((tmp_path / source["filepath"]).read_bytes())
+    candidate.update(output_sha256=source["sha256"], output_pixel_sha256=source["decoded_pixel_sha256"])
+    assert check_candidate(tmp_path, candidate, source, {}, {})["reason"] == "exact_duplicate"
+    path.write_bytes(b"unreadable JPEG")
+    assert check_candidate(tmp_path, candidate, source, {}, {})["reason"] == "unreadable"
 
 
 def test_invalid_train_source_and_blank_output_are_rejected(tmp_path):

@@ -40,7 +40,7 @@ def _cpu_snapshot(value):
     return copy.deepcopy(value)
 
 
-from .artifacts import verify_stage
+from .artifacts import resolve_manifest_image, verify_stage
 
 
 def _training_device():
@@ -67,7 +67,7 @@ class _ManifestDataset:
     def __getitem__(self, index):
         from .classifier import classifier_transform
         row = self.rows[index]
-        return classifier_transform(self.root / row["filepath"]), int(row["class_id"]), row["image_id"]
+        return classifier_transform(resolve_manifest_image(self.root, row)), int(row["class_id"]), row["image_id"]
 
 
 def _capture_rng(generator, device):
@@ -157,11 +157,11 @@ def train_run(root, condition, seed):
         if not manifests[split]:
             raise ValueError(f"empty {split} manifest")
         for row in manifests[split]:
-            file = _resolve_artifact(root, row["filepath"])
+            file = resolve_manifest_image(root, row)
             if not file.is_file() or sha256_file(file) != row["sha256"] or row["split"] != split:
                 raise ValueError(f"{split} manifest file changed")
-            if split == "val" and row["is_synthetic"] != "false":
-                raise ValueError("validation must contain only real images")
+            if (split == "val" or condition == "original") and row["is_synthetic"] != "false":
+                raise ValueError("validation and Condition A must contain only cleaned real images")
     meta = json.loads((root / "splits/split_metadata.json").read_text(encoding="utf-8"))
     with (root / "splits/class_groups.csv").open(encoding="utf-8", newline="") as stream:
         class_groups = {name:[] for name in ("many", "medium", "tail")}

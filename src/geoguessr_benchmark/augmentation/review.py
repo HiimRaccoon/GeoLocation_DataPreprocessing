@@ -7,9 +7,9 @@ import re
 import shutil
 import uuid
 
-from ..artifacts import _resolve_artifact, atomic_write_bytes, canonical_jsonl_bytes, sha256_file, verify_stage
+from ..artifacts import BENCHMARK_ID, _resolve_artifact, atomic_write_bytes, canonical_jsonl_bytes, resolve_cleaned_image, sha256_file, verify_stage
 
-RUBRIC = "geographic-cues-v1"
+RUBRIC = "geographic-cues-v1.2"
 REASONS = {"geographic_cue_changed", "generation_artifact", "reject_ambiguous"}
 
 
@@ -40,7 +40,9 @@ def _validated_pair(root, row, train, holdout):
     src = train.get(row["source_image_id"])
     if not src or src["filepath"] != row["source_image_path"] or src["sha256"] != row["source_sha256"] or src["class_name"] != row["class_name"]:
         raise ValueError("source is not the original train image")
-    source = _resolve_artifact(root, row["source_image_path"])
+    if row.get("benchmark_id") != BENCHMARK_ID:
+        raise ValueError("incompatible candidate benchmark identity")
+    source = resolve_cleaned_image(root, row["source_image_path"])
     output = _resolve_artifact(root, row["synthetic_path"])
     sid = row.get("synthetic_id")
     if not isinstance(sid, str) or not re.fullmatch("[0-9a-f]{64}", sid):
@@ -61,6 +63,8 @@ def export_review_queue(root, output):
     train = _train(root)
     holdout = _holdout_hashes(root)
     rows = _jsonl(root / "augmentation/manifests/candidates.jsonl")
+    if any(row.get("benchmark_id") != BENCHMARK_ID for row in rows):
+        raise ValueError("incompatible candidate benchmark identity")
     qc_context = None
     if lock["stage"] != "splits":
         from ..config import load_config
@@ -69,7 +73,10 @@ def export_review_queue(root, output):
         qc_context = build_qc_index(root)
         accepted_files = {row["output_sha256"] for row in rows if row.get("accepted") is True}
         accepted_pixels = {row["output_pixel_sha256"] for row in rows if row.get("accepted") is True}
-    reviewed = {r["synthetic_id"] for r in _jsonl(root / "augmentation/manifests/reviews.jsonl")}
+    decisions = _jsonl(root / "augmentation/manifests/reviews.jsonl")
+    if any(row.get("rubric_version") != RUBRIC for row in decisions):
+        raise ValueError("incompatible review version")
+    reviewed = {row["synthetic_id"] for row in decisions}
     queue = []
     pairs = []
     for row in rows:
@@ -136,6 +143,8 @@ def import_review_decisions(root, input):
     holdout = _holdout_hashes(root)
     existing_path = root / "augmentation/manifests/reviews.jsonl"
     existing = _jsonl(existing_path)
+    if any(row.get("rubric_version") != RUBRIC for row in existing + queue):
+        raise ValueError("incompatible review version")
     decisions = {row["synthetic_id"]: row for row in existing}
     if len(decisions) != len(existing):
         raise ValueError("duplicate saved review decisions")

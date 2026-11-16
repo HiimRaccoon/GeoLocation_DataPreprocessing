@@ -10,8 +10,10 @@ guidance_scale: 5.0
 num_inference_steps: 40
 num_images_per_prompt: 1
 generation_batch_size: 1
-generation_canvas_width: 384
-generation_canvas_height: 160
+generation_resolution_policy: native_pad_to_multiple
+generation_multiple: 8
+generation_padding_mode: reflect
+generation_downsample: false
 precision: float32
 attention_backend: standard
 xformers: false

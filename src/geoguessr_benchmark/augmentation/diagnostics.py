@@ -126,18 +126,17 @@ def _load_dino_model(root, snapshot):
 
 def _embed_candidate(model, root, row, kind, train_index):
     import torch
-    from PIL import Image
-    from ..artifacts import _resolve_artifact, sha256_file
+    from ..artifacts import _resolve_artifact, resolve_cleaned_image, sha256_file
     from ..images import decode_rgb
     source = train_index.get(row["source_image_id"])
     if not source or source["filepath"] != row["source_image_path"] or source["sha256"] != row["source_sha256"]:
         raise ValueError("DINO source is not the locked original train image")
     output = _resolve_artifact(root, row["synthetic_path"])
-    source_path = _resolve_artifact(root, row["source_image_path"])
+    source_path = resolve_cleaned_image(root, row["source_image_path"])
     if sha256_file(output) != row["output_sha256"] or sha256_file(source_path) != row["source_sha256"]:
         raise ValueError("DINO input hash mismatch")
     generated = decode_rgb(output)
-    image = generated if kind == "output" else decode_rgb(source_path).resize(generated.size, Image.Resampling.BILINEAR)
+    image = generated if kind == "output" else decode_rgb(source_path)
     with torch.inference_mode(), torch.autocast(device_type="cuda", enabled=False):
         vector = model(dino_transform(image).unsqueeze(0).to("cuda"))
     return vector.detach().float().cpu().numpy().reshape(-1)

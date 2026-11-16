@@ -33,11 +33,20 @@ def test_review_bundle_roundtrip_checks_image_hashes(tmp_path):
                 "review_timestamp":"2026-11-14T00:00:00Z", "rubric_version":queue[0]["rubric_version"],
                 "decision":"accept", "reason":None}
     decisions = tmp_path / "decisions.jsonl"
+    decisions.write_text(json.dumps(dict(decision, rubric_version="geographic-cues-v1")) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="rubric"):
+        import_review_decisions(tmp_path, decisions)
     decisions.write_text(json.dumps(decision) + "\n", encoding="utf-8")
     assert len(import_review_decisions(tmp_path, decisions)) == 1
     from geoguessr_benchmark.__main__ import main
     assert main(["--root", str(tmp_path), "review-import", "--input", str(decisions)]) == 0
-    (tmp_path / candidate["synthetic_path"]).write_bytes(b"changed")
+    generated = tmp_path / candidate["synthetic_path"]
+    before = generated.read_bytes()
+    generated.write_bytes(b"changed")
+    with pytest.raises(ValueError, match="hash"):
+        import_review_decisions(tmp_path, decisions)
+    generated.write_bytes(before)
+    (tmp_path / source["filepath"]).write_bytes(b"changed")
     with pytest.raises(ValueError, match="hash"):
         import_review_decisions(tmp_path, decisions)
 

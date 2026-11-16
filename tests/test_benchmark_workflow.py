@@ -11,7 +11,8 @@ import torch
 
 from geoguessr_benchmark.__main__ import main
 from geoguessr_benchmark.artifacts import atomic_write_bytes, canonical_jsonl_bytes, sha256_file, verify_stage
-from geoguessr_benchmark.images import letterbox_geometry
+from geoguessr_benchmark.augmentation.diffusion import native_generation_geometry
+from geoguessr_benchmark.cleaning import HUD_BOXES
 
 
 def test_complete_fixture_workflow_with_review_resume_and_test_gate(tmp_path, monkeypatch):
@@ -37,14 +38,20 @@ def test_complete_fixture_workflow_with_review_resume_and_test_gate(tmp_path, mo
         directory=root/"data/compressed_dataset"/f"C{class_id:03d}"
         directory.mkdir(parents=True)
         for index in range(4 if class_id==0 else 1):
-            pixels=rng.integers(0,256,(8,12,3),dtype=np.uint8)
+            pixels=rng.integers(0,256,(40,60,3),dtype=np.uint8)
             Image.fromarray(pixels).save(directory/f"{index}.jpg",quality=95)
     monkeypatch.setattr(inventory,"DEFAULT_BASELINE",{"images":127,"classes":124})
     # Fixture-only budgets keep this smoke test small; production group boundaries
     # are tested independently and the standard policy remains unchanged.
     monkeypatch.setattr(split,"group_for_count",lambda n:("tail",4,2) if n==2 else ("tail",1,0))
+    monkeypatch.setitem(HUD_BOXES, (60, 40), ((41, 1, 57, 5), (42, 25, 57, 36)))
+    assert main(["--root",str(root),"clean"]) == 0
     assert main(["--root",str(root),"inventory"]) == 0
     assert main(["--root",str(root),"split"]) == 0
+    split_audit = json.loads((root/"reports/split_audit.json").read_text(encoding="utf-8"))
+    assert split_audit["split_counts"] == {"train": 125, "val": 1, "test": 1}
+    assert split_audit["split_support"] == {"train": 124, "val": 1, "test": 1}
+    assert split_audit["cross_split_duplicates"] == []
     assert main(["--root",str(root),"test-all"]) == 1
     original=(root/"splits/test.csv").read_bytes()
     (root/"splits/test.csv").write_bytes(b"corrupt")
@@ -65,10 +72,10 @@ def test_complete_fixture_workflow_with_review_resume_and_test_gate(tmp_path, mo
     assert main(["--root",str(root),"preflight"]) == 0
     monkeypatch.setattr(workflow,"load_pinned_diffusion",lambda root,snapshot:object())
     def generate(source, attempt, config, snapshot):
-        g=letterbox_geometry(source.width,source.height,384,160)
-        data=np.random.default_rng(attempt["generation_seed"]).integers(0,256,(g["height"],g["width"],3),dtype=np.uint8)
-        return Image.fromarray(data), {"generation_canvas_width":384,"generation_canvas_height":160,"source_bbox":g["source_bbox"],
-            "resized_source_width":g["width"],"resized_source_height":g["height"],"output_content_only":True,"safety_flag":False,
+        assert attempt["source_image_path"].startswith("data/cleaned_dataset/")
+        g=native_generation_geometry(*source.size)
+        data=np.random.default_rng(attempt["generation_seed"]).integers(0,256,(source.height,source.width,3),dtype=np.uint8)
+        return Image.fromarray(data), {**g, "safety_flag":False,
             "diffusion_model":config["diffusion_model"],"model_revision":"a"*40,"weights_sha256":"b"*64,"scheduler_config":{"x":1},
             "prompt":config["prompt"].format(class_name=attempt["class_name"]),"negative_prompt":config["negative_prompt"],
             "strength":config["strength"],"guidance_scale":config["guidance_scale"],"num_inference_steps":config["num_inference_steps"],
@@ -78,6 +85,11 @@ def test_complete_fixture_workflow_with_review_resume_and_test_gate(tmp_path, mo
     assert main(["--root",str(root),"review-export","--output","augmentation/manifests/review_queue.jsonl"]) == 0
     queue=[json.loads(line) for line in (root/"augmentation/manifests/review_queue.jsonl").read_text(encoding="utf-8").splitlines()]
     assert len(queue)==2
+    for row in queue:
+        source = root / row["source_image_path"]
+        raw = root / "data/compressed_dataset" / source.relative_to(root / "data/cleaned_dataset")
+        copied = root / "augmentation/review/sources" / f'{row["synthetic_id"]}.jpg'
+        assert copied.read_bytes() == source.read_bytes() != raw.read_bytes()
     decisions=[{"synthetic_id":row["synthetic_id"],"source_sha256":row["source_sha256"],"output_sha256":row["output_sha256"],
                 "reviewer_id":"fixture","review_timestamp":"2026-11-14T00:00:00Z","rubric_version":row["rubric_version"],"decision":"accept","reason":None} for row in queue]
     atomic_write_bytes(root/"reviews.jsonl",canonical_jsonl_bytes(decisions))
@@ -85,7 +97,13 @@ def test_complete_fixture_workflow_with_review_resume_and_test_gate(tmp_path, mo
     assert main(["--root",str(root),"augment"]) == 0
     assert verify_stage(root,"membership")["stage"]=="membership"
     def diagnostics(root):
+        assert verify_stage(root, "membership")["stage"] == "membership"
+        for relative in ("augmentation/manifests/accepted.jsonl", "augmentation/manifests/qc_summary.json",
+                         "splits/train_augmented.csv"):
+            assert not (root / relative).exists()
         rows=[json.loads(line) for line in (root/"augmentation/manifests/candidates.jsonl").read_text(encoding="utf-8").splitlines()]
+        train = {row["filepath"] for row in csv.DictReader((root/"splits/train.csv").read_text(encoding="utf-8").splitlines())}
+        assert all(row["source_image_path"] in train and row["source_image_path"].startswith("data/cleaned_dataset/") for row in rows)
         rows[0]["dino_source_similarity"]=None
         rows[0]["dino_diagnostic_error"]="fixture diagnostic failure"
         return rows
@@ -94,7 +112,10 @@ def test_complete_fixture_workflow_with_review_resume_and_test_gate(tmp_path, mo
     assert verify_stage(root,"augmented")["stage"]=="augmented"
 
     monkeypatch.setattr(classifier,"build_model",lambda path:torch.nn.Sequential(torch.nn.Flatten(),torch.nn.Linear(3,124)))
-    monkeypatch.setattr(classifier,"classifier_transform",lambda path:torch.tensor([[[.2]],[[.3]],[[.4]]]))
+    def classifier_input(path):
+        assert path.relative_to(root).parts[1] in {"cleaned_dataset", "augmented_dataset"}
+        return torch.tensor([[[.2]],[[.3]],[[.4]]])
+    monkeypatch.setattr(classifier,"classifier_transform",classifier_input)
     monkeypatch.setattr(training,"_training_device",lambda:torch.device("cpu"))
     real_loader=torch.utils.data.DataLoader
     def loader(*args,**kwargs):

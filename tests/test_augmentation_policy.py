@@ -5,8 +5,8 @@ from geoguessr_benchmark.augmentation.policy import plan_candidate
 
 def test_seed_and_round_robin_are_stable():
     sources = [
-        {"image_id":"b", "filepath":"data/b.jpg", "class_id":7, "split":"train", "is_synthetic":"false"},
-        {"image_id":"a", "filepath":"data/a.jpg", "class_id":7, "split":"train", "is_synthetic":"false"},
+        {"image_id":"b", "filepath":"data/cleaned_dataset/A/b.jpg", "class_id":7, "split":"train", "is_synthetic":"false"},
+        {"image_id":"a", "filepath":"data/cleaned_dataset/A/a.jpg", "class_id":7, "split":"train", "is_synthetic":"false"},
     ]
     assert plan_candidate("traditional", 7, 0, sources)["generation_seed"] == 1121161069
     assert plan_candidate("traditional", 7, 1, sources)["generation_seed"] == 3767014528
@@ -16,11 +16,14 @@ def test_seed_and_round_robin_are_stable():
     sources[0]["split"] = "test"
     with pytest.raises(ValueError):
         plan_candidate("traditional", 7, 0, sources)
+    sources[0].update(split="train", filepath="data/compressed_dataset/A/b.jpg")
+    with pytest.raises(ValueError, match="cleaned"):
+        plan_candidate("traditional", 7, 0, sources)
 
 
 def test_planning_respects_group_budget_attempt_cap_and_resume():
     from geoguessr_benchmark.augmentation.policy import next_candidate
-    sources = [{"image_id":"a", "filepath":"data/a.jpg", "class_id":7, "split":"train", "is_synthetic":"false"}]
+    sources = [{"image_id":"a", "filepath":"data/cleaned_dataset/A/a.jpg", "class_id":7, "split":"train", "is_synthetic":"false"}]
     group = {"class_id":7, "group":"tail", "required_accepted":2}
     first = next_candidate(group, sources, [])
     assert first["attempt_index"] == 0 and first["augmentation_type"] == "da_fusion"

@@ -4,7 +4,8 @@ from collections.abc import Mapping
 import numpy as np
 from PIL import Image
 
-from ..images import letterbox_geometry
+GENERATION_MULTIPLE = 8
+GENERATION_PADDING_MODE = "reflect"
 
 
 def canonical_scheduler_config(config):
@@ -30,22 +31,36 @@ def canonical_scheduler_config(config):
     return normalize(config)
 
 
+def native_generation_geometry(width, height):
+    """Describe the native content and the smallest centered VAE canvas."""
+    if min(width, height) < 1:
+        raise ValueError("generation dimensions must be positive")
+    extra_w = -width % GENERATION_MULTIPLE
+    extra_h = -height % GENERATION_MULTIPLE
+    left, top = extra_w // 2, extra_h // 2
+    return {"source_content_width": width, "source_content_height": height,
+            "generation_canvas_width": width + extra_w, "generation_canvas_height": height + extra_h,
+            "source_bbox": [left, top, left + width, top + height],
+            "padding_mode": GENERATION_PADDING_MODE,
+            "padding": {"left": left, "right": extra_w - left, "top": top, "bottom": extra_h - top},
+            "output_content_only": True, "output_width": width, "output_height": height}
+
+
 def prepare_generation_canvas(rgb):
     if rgb.mode != "RGB":
         raise ValueError("generation source must be RGB")
-    geometry = letterbox_geometry(rgb.width, rgb.height, 384, 160)
-    resized = rgb.resize((geometry["width"], geometry["height"]), resample=Image.Resampling.BILINEAR)
-    padded = np.pad(np.asarray(resized), ((geometry["top"], geometry["bottom"]), (geometry["left"], geometry["right"]), (0, 0)), mode="reflect")
+    geometry = native_generation_geometry(*rgb.size)
+    pad = geometry["padding"]
+    padded = np.pad(np.asarray(rgb), ((pad["top"], pad["bottom"]), (pad["left"], pad["right"]), (0, 0)),
+                    mode=GENERATION_PADDING_MODE)
     return Image.fromarray(padded, "RGB"), geometry
 
 
-def crop_generated_content(canvas, source_bbox):
-    if canvas.mode != "RGB" or canvas.size != (384, 160) or len(source_bbox) != 4:
-        raise ValueError("invalid generated canvas or bbox")
-    left, top, right, bottom = source_bbox
-    if any(type(v) is not int for v in source_bbox) or not (0 <= left < right <= 384 and 0 <= top < bottom <= 160):
-        raise ValueError("invalid source bbox")
-    return canvas.crop((left, top, right, bottom))
+def crop_generated_content(canvas, geometry):
+    expected = native_generation_geometry(geometry["source_content_width"], geometry["source_content_height"])
+    if canvas.mode != "RGB" or canvas.size != (expected["generation_canvas_width"], expected["generation_canvas_height"]) or geometry != expected:
+        raise ValueError("invalid generated native canvas or geometry")
+    return canvas.crop(expected["source_bbox"])
 
 
 def generate_diffusion(source, attempt, config, snapshot):
@@ -77,7 +92,7 @@ def generate_diffusion(source, attempt, config, snapshot):
     if len(result.images) != 1 or flags is None or len(flags) != 1 or not timesteps:
         raise ValueError("diffusion output missing image, safety flag or actual timesteps")
     generated = result.images[0]
-    content = crop_generated_content(generated, geometry["source_bbox"])
+    content = crop_generated_content(generated, geometry)
     import hashlib
     from ..artifacts import canonical_json_bytes
     entries = snapshot["files"]["sd_weights"]
@@ -91,11 +106,7 @@ def generate_diffusion(source, attempt, config, snapshot):
     weight_hashes = {entry["path"]:entry["sha256"] for entry in sorted(weights, key=lambda item:item["path"])}
     weights_sha256 = next(iter(weight_hashes.values())) if len(weight_hashes) == 1 else hashlib.sha256(canonical_json_bytes(weight_hashes)).hexdigest()
     scheduler_config = canonical_scheduler_config(pipeline.scheduler.config)
-    metadata = {"generation_canvas_width": 384, "generation_canvas_height": 160,
-                "source_bbox": geometry["source_bbox"], "resized_source_width": geometry["width"],
-                "resized_source_height": geometry["height"], "padding_mode": "reflect",
-                "padding": {key: geometry[key] for key in ("left", "right", "top", "bottom")},
-                "output_content_only": True, "output_width": content.width, "output_height": content.height,
+    metadata = {**geometry,
                 "actual_timesteps": timesteps, "safety_flag": bool(flags[0]),
                 "diffusion_model": config.get("diffusion_model"), "model_revision": snapshot["sd_revision"],
                 "weights_sha256":weights_sha256, "weights_files_sha256":weight_hashes, "scheduler_config":scheduler_config,

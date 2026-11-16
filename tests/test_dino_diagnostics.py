@@ -50,7 +50,7 @@ def test_dino_preprocessing_is_rgb_letterboxed_with_zero_normalized_padding():
     import torch
     from PIL import Image
     from geoguessr_benchmark.augmentation.diagnostics import dino_transform
-    image = Image.new("RGB", (371,160), (40,90,140))
+    image = Image.new("RGB", (1536,662), (40,90,140))
     tensor = dino_transform(image)
     assert tensor.shape == (3,224,224)
     assert tensor.dtype == torch.float32

@@ -5,8 +5,8 @@ import hashlib
 import json
 from pathlib import Path
 
-from ..artifacts import (_resolve_artifact, atomic_write_bytes, canonical_csv_bytes, canonical_json_bytes,
-                         canonical_jsonl_bytes, sha256_file, verify_stage)
+from ..artifacts import (BENCHMARK_ID, _resolve_artifact, atomic_write_bytes, canonical_csv_bytes, canonical_json_bytes,
+                         canonical_jsonl_bytes, read_benchmark_lock, resolve_cleaned_image, sha256_file, verify_stage)
 from ..images import decode_rgb, pixel_sha256
 from ..split import GROUP_FIELDS, SPLIT_FIELDS
 from .diagnostics import log_dino_diagnostics, membership_sha256
@@ -80,7 +80,7 @@ def _recover_interrupted_freeze(root):
     if not journal_path.exists():
         return
     journal = json.loads(journal_path.read_text(encoding="utf-8"))
-    lock = json.loads((root / "benchmark_lock.json").read_text(encoding="utf-8"))
+    lock = read_benchmark_lock(root)
     if lock.get("stage") == "augmented":
         verify_stage(root, "augmented")
         journal_path.unlink()
@@ -114,6 +114,12 @@ def freeze_augmented(root):
     if (root / "augmentation/manifests/holdout_incident.json").exists():
         raise ValueError("recorded holdout collision blocks freeze")
     candidates = _jsonl(root / "augmentation/manifests/candidates.jsonl")
+    if any(row.get("benchmark_id") != BENCHMARK_ID for row in candidates):
+        raise ValueError("incompatible candidate benchmark identity")
+    review_path = root / "augmentation/manifests/reviews.jsonl"
+    decisions = _jsonl(review_path)
+    if any(row.get("rubric_version") != RUBRIC for row in decisions):
+        raise ValueError("incompatible review version")
     expected = lock.get("membership_sha256")
     if membership_sha256(candidates) != expected:
         raise ValueError("frozen membership hash mismatch")
@@ -142,8 +148,6 @@ def freeze_augmented(root):
     class_ids = [int(row["class_id"]) for row in groups]
     if len(class_ids) != len(set(class_ids)):
         raise ValueError("duplicate class group IDs")
-    review_path = root / "augmentation/manifests/reviews.jsonl"
-    decisions = _jsonl(review_path)
     reviews = {row["synthetic_id"]: row for row in decisions}
     if len(reviews) != len(decisions):
         raise ValueError("duplicate review decisions")
@@ -274,6 +278,10 @@ def generate_offline(root):
     reviews_path = root / "augmentation/manifests/reviews.jsonl"
     records = _jsonl(candidates_path)
     decisions = _jsonl(reviews_path)
+    if any(row.get("benchmark_id") != BENCHMARK_ID for row in records):
+        raise ValueError("incompatible candidate benchmark identity")
+    if any(row.get("rubric_version") != RUBRIC for row in decisions):
+        raise ValueError("incompatible review version")
     if len({row["synthetic_id"] for row in records}) != len(records) or len({row["synthetic_id"] for row in decisions}) != len(decisions):
         raise ValueError("duplicate candidate or review IDs")
     reviews = {row["synthetic_id"]: row for row in decisions}
@@ -361,7 +369,7 @@ def generate_offline(root):
         while accepted + pending < budget and len(attempts) < 10 * budget:
             attempt = plan_candidate(method, class_id, len(attempts), sources)
             source = next(item for item in sources if item["image_id"] == attempt["source_image_id"])
-            source_path = _resolve_artifact(root, source["filepath"])
+            source_path = resolve_cleaned_image(root, source["filepath"])
             if sha256_file(source_path) != source["sha256"]:
                 raise ValueError("source file differs from locked train manifest")
             original = decode_rgb(source_path)

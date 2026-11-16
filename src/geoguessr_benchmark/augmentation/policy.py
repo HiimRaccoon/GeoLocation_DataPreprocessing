@@ -1,5 +1,6 @@
 """Deterministic candidate identities, seeds and train-only source ordering."""
 import hashlib
+from ..artifacts import BENCHMARK_ID, CLEANED_DATASET
 
 
 def plan_candidate(augmentation_type, class_id, attempt_index, sources):
@@ -10,15 +11,16 @@ def plan_candidate(augmentation_type, class_id, attempt_index, sources):
         raise ValueError("candidate requires train sources")
     for source in sources:
         if (source.get("split") != "train" or source.get("is_synthetic") not in (False, "false")
-            or int(source.get("class_id", -1)) != class_id or not source.get("image_id") or not source.get("filepath")):
-            raise ValueError("candidate sources must be original train images of the same class")
+            or int(source.get("class_id", -1)) != class_id or not source.get("image_id")
+            or not str(source.get("filepath", "")).startswith(CLEANED_DATASET + "/")):
+            raise ValueError("candidate sources must be cleaned original train images of the same class")
     sources.sort(key=lambda row: row["filepath"])
     if len({row["image_id"] for row in sources}) != len(sources):
         raise ValueError("duplicate source IDs")
     source = sources[attempt_index % len(sources)]
     seed_bytes = hashlib.sha256(f"aug-v1|314159|{augmentation_type}|{class_id}|{attempt_index}".encode()).digest()
-    identifier = hashlib.sha256(f"synthetic-v1|{augmentation_type}|{class_id}|{attempt_index}".encode()).hexdigest()
-    return {"synthetic_id": identifier, "augmentation_type": augmentation_type, "class_id": class_id,
+    identifier = hashlib.sha256(f"{BENCHMARK_ID}|{augmentation_type}|{class_id}|{attempt_index}".encode()).hexdigest()
+    return {"benchmark_id": BENCHMARK_ID, "synthetic_id": identifier, "augmentation_type": augmentation_type, "class_id": class_id,
             "attempt_index": attempt_index, "generation_seed": int.from_bytes(seed_bytes[:4], "big"),
             "source_image_id": source["image_id"], "source_image_path": source["filepath"], "source_split": "train"}
 

@@ -53,6 +53,17 @@ def test_freeze_requires_six_complete_runs_and_locked_best(tmp_path):
                   "selected_epoch":1,"best_checkpoint_sha256":sha256_file(base/"best_checkpoint.pt"),"batch_size":2,"train_count":2,
                   "original_count":2,"synthetic_count":0,"duration_seconds":1,"failure_history":[]}
             atomic_write_bytes(base/"run_metadata.json",canonical_json_bytes(info))
+    missing_run=tmp_path/"runs/augmented/seed_2026/run_metadata.json"
+    complete=missing_run.read_bytes()
+    missing_run.unlink()
+    with pytest.raises(ValueError, match="incomplete run"):
+        freeze_checkpoints(tmp_path)
+    incomplete=json.loads(complete)
+    incomplete["epochs_completed"]=19
+    atomic_write_bytes(missing_run,canonical_json_bytes(incomplete))
+    with pytest.raises(ValueError, match="completed epochs"):
+        freeze_checkpoints(tmp_path)
+    atomic_write_bytes(missing_run,complete)
     missing=tmp_path/"runs/augmented/seed_2026/history.csv"
     data=missing.read_bytes()
     missing.unlink()

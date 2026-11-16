@@ -7,14 +7,16 @@ from geoguessr_benchmark.classifier import classifier_transform, build_model, bu
 
 
 def test_classifier_preprocessing_preserves_aspect_and_zero_padding(tmp_path):
-    for width, height, left in [(1536,662,6), (1030,703,75), (371,160,6), (234,160,75)]:
-        path = tmp_path / f"{width}.jpg"
-        Image.new("RGB", (width,height), (80,120,160)).save(path)
-        tensor = classifier_transform(path)
-        assert tensor.dtype == torch.float32
-        assert tuple(tensor.shape) == (3,160,384)
-        assert torch.count_nonzero(tensor[:, :, :left]) == 0
-        assert torch.equal(tensor, classifier_transform(path))
+    for dataset in ("cleaned_dataset", "augmented_dataset"):
+        for width, height, left in [(1536, 662, 6), (1030, 703, 75)]:
+            path = tmp_path / "data" / dataset / f"{width}.jpg"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            Image.new("RGB", (width, height), (80, 120, 160)).save(path)
+            tensor = classifier_transform(path)
+            assert tensor.dtype == torch.float32
+            assert tuple(tensor.shape) == (3, 160, 384)
+            assert torch.count_nonzero(tensor[:, :, :left]) == 0
+            assert torch.equal(tensor, classifier_transform(path))
 
 
 def test_model_uses_supplied_backbone_and_trainable_124_class_head(tmp_path):
