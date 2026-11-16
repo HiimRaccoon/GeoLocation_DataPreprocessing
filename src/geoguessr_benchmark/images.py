@@ -1,5 +1,6 @@
 """Image decoding, canonical pixel hashing and shared letterbox geometry."""
 import hashlib
+from io import BytesIO
 import math
 import struct
 
@@ -21,6 +22,13 @@ def write_output_jpeg(path, rgb):
     if rgb.mode != "RGB":
         raise ValueError("JPEG output requires RGB")
     rgb.save(path, format="JPEG", quality=95, subsampling=0, exif=b"")
+
+
+def encode_output_jpeg(rgb):
+    """Encode with the shared output policy without touching the filesystem."""
+    buffer = BytesIO()
+    write_output_jpeg(buffer, rgb)
+    return buffer.getvalue()
 
 
 def letterbox_geometry(width, height, canvas_width, canvas_height):

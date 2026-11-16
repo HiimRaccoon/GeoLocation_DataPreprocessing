@@ -1,9 +1,12 @@
 import hashlib
+from io import BytesIO
 import struct
 
 import numpy as np
 from PIL import Image
+import pytest
 
+from geoguessr_benchmark import images
 from geoguessr_benchmark.images import decode_rgb, letterbox_geometry, pixel_sha256, write_output_jpeg
 
 
@@ -35,3 +38,21 @@ def test_output_jpeg_is_rgb_without_exif_and_no_chroma_subsampling(tmp_path):
         assert image.size == (12, 8)
         assert not image.getexif()
         assert image.layer[0][1:3] == (1, 1)
+
+
+def test_encode_output_jpeg_is_deterministic_and_preserves_policy():
+    rgb = Image.fromarray(np.random.default_rng(42).integers(0, 256, (24, 32, 3), dtype=np.uint8))
+    rgb.getexif()[274] = 6
+    encoded = images.encode_output_jpeg(rgb)
+    assert isinstance(encoded, bytes)
+    assert encoded == images.encode_output_jpeg(rgb)
+    reference = BytesIO()
+    rgb.save(reference, format="JPEG", quality=95, subsampling=0, exif=b"")
+    assert encoded == reference.getvalue()
+    with Image.open(BytesIO(encoded)) as decoded:
+        decoded.load()
+        assert decoded.mode == "RGB" and decoded.size == rgb.size
+        assert not decoded.getexif()
+        assert decoded.layer[0][1:3] == (1, 1)
+    with pytest.raises(ValueError, match="requires RGB"):
+        images.encode_output_jpeg(rgb.convert("L"))

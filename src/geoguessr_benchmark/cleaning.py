@@ -7,9 +7,9 @@ from tempfile import TemporaryDirectory
 
 from .artifacts import (
     BENCHMARK_ID, CLEANED_DATASET, CLEANING_MANIFEST, atomic_write_bytes,
-    canonical_json_bytes, sha256_file,
+    canonical_json_bytes,
 )
-from .images import decode_rgb, pixel_sha256, write_output_jpeg
+from .images import decode_rgb, encode_output_jpeg, pixel_sha256
 
 RAW_DATASET = "data/compressed_dataset"
 POLICY = "geoguessr_fixed_hud_neutral_fill_v1"
@@ -74,13 +74,19 @@ def clean_dataset(root):
                     image.paste(FILL, box)
                 output = destination / relative
                 output.parent.mkdir(parents=True, exist_ok=True)
-                write_output_jpeg(output, image)
+                jpeg_bytes = encode_output_jpeg(image)
+                decoded = decode_rgb(BytesIO(jpeg_bytes))
+                if decoded.size != image.size:
+                    raise ValueError(f"cleaned dimensions changed: {relative.as_posix()}")
+                cleaned_sha256 = hashlib.sha256(jpeg_bytes).hexdigest()
+                cleaned_pixels = pixel_sha256(decoded)
+                atomic_write_bytes(output, jpeg_bytes)
                 entries.append({
                     "raw_path": (PurePosixPath(RAW_DATASET) / relative.as_posix()).as_posix(),
                     "cleaned_path": (PurePosixPath(CLEANED_DATASET) / relative.as_posix()).as_posix(),
                     "width": image.width, "height": image.height, "bboxes": boxes,
                     "raw_sha256": hashlib.sha256(payload).hexdigest(), "raw_pixel_sha256": raw_pixels,
-                    "cleaned_sha256": sha256_file(output), "cleaned_pixel_sha256": pixel_sha256(decode_rgb(output)),
+                    "cleaned_sha256": cleaned_sha256, "cleaned_pixel_sha256": cleaned_pixels,
                 })
         result = {"schema_version": 1, "benchmark_id": BENCHMARK_ID, "policy": POLICY, "fill_rgb": FILL,
                   "classes": classes, "images": sorted(entries, key=lambda entry: entry["cleaned_path"])}
