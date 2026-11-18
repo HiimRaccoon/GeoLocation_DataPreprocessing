@@ -157,7 +157,8 @@ def build_report(root):
         lines.append(f'| {row["condition"]} | {row["seed"]} | {vals} | {row["selected_epoch"]} | {row["optimizer_steps"]} | {row["image_exposures"]} | {row["duration_seconds"]:.2f} |')
     lines += ["", "## QC và thông tin chạy", "", "```json", json.dumps(qc, ensure_ascii=False, sort_keys=True, indent=2), "```", "", "```json", json.dumps([run_meta[key] for key in sorted(run_meta)], ensure_ascii=False, sort_keys=True, indent=2), "```", "",
               "## Giới hạn diễn giải", "", "Hai điều kiện dùng cùng 20 epoch nhưng tập augmented có thể tạo thêm bước tối ưu và lượt xem ảnh. Đây là so sánh toàn bộ chính sách, không tách tác động riêng của từng phương pháp và không phải equal-compute.",
-              "Độ lệch chuẩn mẫu phản ánh ba seed trên một split cố định; không chứng minh ý nghĩa thống kê hay tính độc lập địa lý. Các lớp support thấp hoặc không có support cần được diễn giải thận trọng. Review diffusion có tính chủ quan; còn rủi ro near-copy, domain gap, trùng dữ liệu tiền huấn luyện và leakage theo vị trí chưa được kiểm chứng.", ""]
+              "Độ lệch chuẩn mẫu phản ánh ba seed trên một split cố định; không chứng minh ý nghĩa thống kê hay tính độc lập địa lý. Các lớp support thấp hoặc không có support cần được diễn giải thận trọng. Rủi ro near-copy, domain gap, trùng dữ liệu tiền huấn luyện và leakage theo vị trí chưa được kiểm chứng.",
+              "Automatic QC quyết định membership của E2. Ảnh qua QC vẫn có thể chứa dấu hiệu địa lý sai hoặc bị diffusion thay đổi. Human review tùy chọn chỉ phục vụ phân tích định tính, bên ngoài quyết định membership.", ""]
     raw_fields = ["condition", "seed", *metric_names, "selected_epoch", "optimizer_steps", "train_count", "image_exposures", "duration_seconds"]
     outputs = {"reports/per_seed_metrics.csv":canonical_csv_bytes(raw, raw_fields),
                "reports/aggregate_metrics.json":canonical_json_bytes(aggregate),

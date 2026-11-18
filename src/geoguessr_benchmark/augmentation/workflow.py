@@ -34,7 +34,7 @@ def audit_holdout_collisions(root, rows):
     file_hashes = {row["sha256"] for row in holdout}
     pixel_hashes = {row["decoded_pixel_sha256"] for row in holdout}
     for row in rows:
-        path = _resolve_artifact(root, row["synthetic_path"])
+        path = _resolve_artifact(root, row.get("synthetic_path"))
         if not path.is_file():
             if row.get("accepted") is True:
                 raise ValueError("accepted candidate file is missing")
@@ -60,13 +60,32 @@ def validate_dino_changes(before, after):
 
 def _candidate_records(path):
     rows = _jsonl(path)
-    if any(row.get("benchmark_id") != BENCHMARK_ID for row in rows):
-        raise ValueError("incompatible candidate benchmark identity")
-    if any(row.get("augmentation_policy") != AUGMENTATION_POLICY or row.get("filter_status") == "pending"
-           for row in rows):
-        raise ValueError("stale candidate history: archive legacy T039 artifacts and refresh the split lock")
-    if len({row["synthetic_id"] for row in rows}) != len(rows):
-        raise ValueError("duplicate candidate IDs")
+    seen = set()
+    for index, row in enumerate(rows, 1):
+        label = f"candidate record {index}"
+        if not isinstance(row, dict):
+            raise ValueError(f"{label} must be a JSON object")
+        if row.get("benchmark_id") != BENCHMARK_ID:
+            raise ValueError(f"{label}: incompatible candidate benchmark identity (benchmark_id)")
+        status = row.get("filter_status")
+        if row.get("augmentation_policy") != AUGMENTATION_POLICY or status == "pending":
+            raise ValueError("stale candidate history: archive legacy T039 artifacts and refresh the split lock")
+        for field in ("synthetic_id", "source_image_id"):
+            value = row.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{label}: invalid or missing {field}")
+        if row.get("augmentation_type") not in ("traditional", "da_fusion"):
+            raise ValueError(f"{label}: invalid or missing augmentation_type")
+        for field in ("class_id", "attempt_index"):
+            value = row.get(field)
+            if type(value) is not int or value < 0:
+                raise ValueError(f"{label}: invalid or missing {field}")
+        if status not in ("accepted", "rejected") or row.get("accepted") is not (status == "accepted"):
+            raise ValueError(f"{label}: inconsistent or missing filter_status/accepted")
+        identifier = row["synthetic_id"]
+        if identifier in seen:
+            raise ValueError(f"{label}: duplicate candidate IDs")
+        seen.add(identifier)
     return rows
 
 

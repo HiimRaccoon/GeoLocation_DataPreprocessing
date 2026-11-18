@@ -142,7 +142,7 @@ Thứ tự này áp dụng khi chạy dữ liệu thật. Sau nền tảng, các
 
 ## Bằng chứng xác minh v1.2
 
-`python -m pytest -q` sau bản sửa giữ danh tính và split v1.2: **140 passed in 75.02s**. Lần kiểm tra package v1.2 trước đó đã build/cài với dependencies có sẵn và xác nhận CLI hiển thị lệnh `clean`.
+`python -m pytest -q -rs` sau khi cập nhật prompt E2 và kiểm tra candidate history: **165 passed, 1 skipped in 25.49s**. Test trình duyệt cho review định tính bị skip vì môi trường thiếu Playwright.
 
 | Việc đã đánh dấu | Bằng chứng fixture |
 |---|---|

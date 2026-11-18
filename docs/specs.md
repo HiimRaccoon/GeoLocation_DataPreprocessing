@@ -173,7 +173,7 @@ Không dùng flip ngang/dọc, rotation lớn, hue shift mạnh, aggressive crop
 
 ### 7.1. Biến thể sử dụng
 
-Default là **DA-Fusion-inspired Stable Diffusion image-to-image**, trường manifest `augmentation_type=da_fusion`, `method_variant=sd15_img2img_fixed`. Đề bài cho phép hướng DA-Fusion / Stable Diffusion img2img; ở đây khóa biến thể img2img có conditioning theo class và source. Không tuyên bố tái lập nguyên bản toàn bộ DA-Fusion paper, không thêm textual inversion, LoRA hay fine-tuning diffusion trong default. Nếu sau này yêu cầu tái lập paper, đó là thay đổi đặc tả cần được ghi nhận trước benchmark. Tham chiếu phương pháp gốc: [DA-Fusion](https://arxiv.org/abs/2302.07944).
+E2 dùng **DA-Fusion-inspired Stable Diffusion 1.5 img2img** cho tail classes, với `augmentation_type=da_fusion` và `method_variant=sd15_img2img_fixed`. Ảnh nguồn cung cấp điều kiện về cấu trúc cảnh. Prompt yêu cầu một biến thể chân thực, phù hợp với đặc điểm của quốc gia và có thể thay đổi chi tiết cảnh. Phạm vi triển khai là biến thể img2img đã khóa. Việc tái lập đầy đủ [DA-Fusion](https://arxiv.org/abs/2302.07944) nằm ngoài phạm vi E2.
 
 Luồng generation dùng cleaned real train JPEG → native RGB → minimal reflection pad /8 → VAE encode → img2img → VAE decode → crop theo `source_bbox` → native JPEG content-only → automatic QC và hash audit → accept hoặc reject. Resize cho classifier diễn ra tại train/eval.
 
@@ -223,16 +223,16 @@ Bbox dùng tọa độ canvas trước crop. QC, review, DINO và classifier đ�
 Prompt cố định theo template, chỉ thay `{class_name}` bằng tên thư mục:
 
 ```text
-A realistic street-level road photograph in {class_name}, Google Street View style, preserve the original road layout, traffic side, lane markings, existing signs and visible writing, buildings, utility poles, vegetation and vehicle configuration, natural lighting, subtle realistic variation.
+A realistic street-level road photograph in {class_name}, consistent with the visual characteristics of the country. Create a natural variation of the source scene while keeping it geographically plausible. Allow realistic changes in viewpoint, lighting, weather, road surface, vegetation, buildings, vehicles, street furniture, and local visual details. Keep the scene coherent and photorealistic without copying the source image too literally.
 ```
 
 Negative prompt cố định:
 
 ```text
-illustration, painting, cartoon, flipped road, reversed traffic, altered writing, invented road signs, distorted geometry, impossible objects, deformed vehicles, duplicated objects, severe blur, compression blocks, artificial textures, new watermark
+illustration, painting, cartoon, surreal scene, impossible road geometry, reversed traffic, malformed roads, distorted perspective, deformed vehicles, duplicated objects, nonsensical signage, unreadable text artifacts, added country-name text, added flags, label watermark, severe blur, compression blocks, artificial textures
 ```
 
-Prompt không đảm bảo label preservation. Không dùng quốc kỳ, text tên nước hoặc cue nhân tạo để mã hóa label. Không tự viết thêm prompt theo ảnh sau khi xem evaluation. Giữ safety checker theo model snapshot; flagged outputs bị reject và ghi reason, không thay pipeline để lấy lại ảnh.
+Chỉ điền `{class_name}` vào template đã khóa cho mỗi candidate. Negative prompt yêu cầu tránh chèn tên nước, cờ và watermark chứa nhãn. Diffusion vẫn có thể bịa hoặc thay đổi dấu hiệu địa lý, nên ảnh qua QC vẫn có thể sai nhãn. Safety checker của model snapshot tiếp tục loại flagged outputs và ghi lý do.
 
 ### 7.3. Kiểm tra định tính tùy chọn
 

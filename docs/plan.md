@@ -137,7 +137,7 @@ Lưu final RGB JPEG quality 95, subsampling 0, bỏ EXIF. Decode JPEG cuối đ�
 ### DA-Fusion-inspired img2img cho `tail`
 
 - `augmentation_type=da_fusion`, `method_variant=sd15_img2img_fixed`. Dùng snapshot bất biến của `stable-diffusion-v1-5/stable-diffusion-v1-5`, `StableDiffusionImg2ImgPipeline`, `DDIMScheduler` lấy config từ snapshot. `strength=0.35`, `guidance_scale=5.0`, `num_inference_steps=40`, `eta=0.0`, batch 1, một ảnh/prompt, FP32, standard attention, `xformers=false`. Log timestep schedule thực tế. Pipeline giữ safety checker của snapshot. `safety_flag` là lý do reject khi checker báo flagged. Phiên bản này dùng img2img fixed, không LoRA, textual inversion, diffusion fine-tuning, mixed precision hay quantization.
-- Copy trọn positive/negative prompt ở §7.2 của spec vào `augmentation/da_fusion/config.yaml`. Chỉ thay `{class_name}` bằng tên thư mục. Giữ prompt và rubric độc lập khỏi val/test và classifier scores.
+- Dùng nguyên template ở §7.2 của spec, chỉ điền `{class_name}`. Ảnh nguồn cung cấp cấu trúc cho img2img. Prompt hướng tới biến thể chân thực, phù hợp với quốc gia. E2 lấy cảm hứng từ DA-Fusion và dùng pipeline SD 1.5 img2img đã khóa. Diffusion vẫn có thể bịa hoặc sửa dấu hiệu địa lý. Review định tính hỗ trợ phân tích các thay đổi đó, bên ngoài membership.
 - Dùng cleaned train RGB native. Reflection-pad tối thiểu đến bội số 8, phần lẻ ở right/bottom. Lưu source content dimensions, canvas thực, half-open bbox, offsets và output dimensions. Crop đúng một lần để JPEG content-only giữ nguyên native size.
 
 | Cleaned source | Native-padded canvas | `source_bbox` trên canvas | Output JPEG | Classifier input |
@@ -271,7 +271,7 @@ done
 printf 'Archive: %s\n' "$archive"
 ```
 
-Sau khi đưa bản code/config/spec đã review vào run root, dùng cùng biến `archive` hoặc gán lại đường dẫn đã in. `refresh-split-lock` xác minh checksum T037 và khóa spec mới. Nếu checksum lệch, khôi phục artifact đúng từ bản đã xác minh trước khi chạy tiếp. GPU preflight cũ đã khóa hash của source/spec nên cần chạy lại T038. Giữ immutable model snapshots đã có. Archive T039 theo hợp đồng cũ để kiểm tra sau, chạy generation mới theo policy tự động.
+Sau khi đưa bản code/config/spec đã review vào run root, dùng cùng biến `archive` hoặc gán lại đường dẫn đã in. `refresh-split-lock` xác minh checksum T037 và khóa spec mới. Nếu checksum lệch, khôi phục artifact đúng từ bản đã xác minh trước khi chạy tiếp. Chạy lại T038 để khóa source, spec và config chứa prompt mới. Giữ immutable model snapshots đã có. Archive T039 dùng prompt cũ, kể cả các lần chạy đã dùng automatic QC, rồi sinh lại theo config mới.
 
 ```bash
 set -eu

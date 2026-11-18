@@ -6,7 +6,7 @@ import numpy as np
 from PIL import Image
 import pytest
 
-from geoguessr_benchmark.artifacts import AUGMENTATION_POLICY, _REQUIRED, atomic_write_bytes, canonical_json_bytes, canonical_jsonl_bytes, sha256_file, verify_stage
+from geoguessr_benchmark.artifacts import AUGMENTATION_POLICY, BENCHMARK_ID, _REQUIRED, atomic_write_bytes, canonical_json_bytes, canonical_jsonl_bytes, sha256_file, verify_stage
 from geoguessr_benchmark.images import decode_rgb, pixel_sha256
 from geoguessr_benchmark.augmentation.diffusion import native_generation_geometry
 from geoguessr_benchmark.augmentation.policy import plan_candidate
@@ -15,6 +15,51 @@ from geoguessr_benchmark.augmentation.workflow import freeze_augmented
 from test_qc import setup_fixture
 
 DIFF_CONFIG = {"diffusion_model":"fixture-model", "prompt":"road {class_name}", "negative_prompt":"negative", "strength":.35, "guidance_scale":5.0, "num_inference_steps":40, "eta":0.0}
+
+
+@pytest.mark.parametrize("changes, missing, error", [
+    ({}, "synthetic_id", "synthetic_id"),
+    ({}, "source_image_id", "source_image_id"),
+    ({"benchmark_id": "other"}, None, "benchmark identity"),
+    ({"augmentation_policy": "review_required"}, None, "stale candidate history"),
+    ({"augmentation_type": "geo_disc_ds"}, None, "augmentation_type"),
+    ({"class_id": "0"}, None, "class_id"),
+    ({"class_id": -1}, None, "class_id"),
+    ({"class_id": True}, None, "class_id"),
+    ({"attempt_index": 0.5}, None, "attempt_index"),
+    ({"attempt_index": -1}, None, "attempt_index"),
+    ({"filter_status": "pending", "accepted": False}, None, "stale candidate history"),
+    ({"filter_status": "rejected"}, None, "filter_status/accepted"),
+    ({"accepted": 1}, None, "filter_status/accepted"),
+])
+def test_candidate_history_rejects_invalid_fields(tmp_path, changes, missing, error):
+    from geoguessr_benchmark.augmentation.workflow import _candidate_records
+
+    row = dict(benchmark_id=BENCHMARK_ID, augmentation_policy=AUGMENTATION_POLICY,
+               synthetic_id="candidate", augmentation_type="da_fusion", class_id=0,
+               attempt_index=0, source_image_id="original", filter_status="accepted", accepted=True)
+    path = tmp_path / "candidates.jsonl"
+    atomic_write_bytes(path, canonical_jsonl_bytes([row]))
+    assert _candidate_records(path) == [row]
+    with pytest.raises(ValueError, match="duplicate candidate IDs"):
+        atomic_write_bytes(path, canonical_jsonl_bytes([row, row]))
+        _candidate_records(path)
+    row.update(changes)
+    if missing:
+        del row[missing]
+    atomic_write_bytes(path, canonical_jsonl_bytes([row]))
+    with pytest.raises(ValueError, match=error):
+        _candidate_records(path)
+
+
+@pytest.mark.parametrize("payload", [b'null\n', b'[]\n', b'{\n'])
+def test_candidate_history_rejects_non_objects_and_invalid_json(tmp_path, payload):
+    from geoguessr_benchmark.augmentation.workflow import _candidate_records
+
+    path = tmp_path / "candidates.jsonl"
+    path.write_bytes(payload)
+    with pytest.raises(ValueError):
+        _candidate_records(path)
 
 def fixture_provenance(class_name):
     return {"diffusion_model":"fixture-model", "model_revision":"a"*40, "weights_sha256":"b"*64, "scheduler_config":{"x":1},

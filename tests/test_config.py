@@ -23,7 +23,14 @@ def copy_configs(root):
     ("augmentation/da_fusion/config.yaml", "generation_multiple", 16),
     ("augmentation/da_fusion/config.yaml", "generation_downsample", True),
     ("augmentation/da_fusion/config.yaml", "generation_canvas_width", 384),
-    ("augmentation/da_fusion/config.yaml", "prompt", "different"),
+    ("augmentation/da_fusion/config.yaml", "prompt",
+     "A realistic street-level road photograph in {class_name}, Google Street View style, "
+     "preserve the original road layout, traffic side, lane markings, existing signs and visible writing, "
+     "buildings, utility poles, vegetation and vehicle configuration, natural lighting, subtle realistic variation."),
+    ("augmentation/da_fusion/config.yaml", "negative_prompt",
+     "illustration, painting, cartoon, flipped road, reversed traffic, altered writing, invented road signs, "
+     "distorted geometry, impossible objects, deformed vehicles, duplicated objects, severe blur, "
+     "compression blocks, artificial textures, new watermark"),
     ("augmentation/da_fusion/config.yaml", "qc", {"grayscale_std_min": 1.0}),
 ])
 def test_locked_configuration_changes_are_rejected(tmp_path, file, key, value):
@@ -53,3 +60,14 @@ def test_qc_thresholds_are_explicit_and_frozen(tmp_path):
     config=load_config(tmp_path)
     assert config["traditional"]["qc"]["grayscale_std_min"] == 5.0
     assert config["da_fusion"]["qc"]["blur_source_ratio"] == .5
+
+
+def test_diffusion_prompts_and_parameters_are_frozen():
+    config = load_config(PROJECT)["da_fusion"]
+    assert config["prompt"] == "A realistic street-level road photograph in {class_name}, consistent with the visual characteristics of the country. Create a natural variation of the source scene while keeping it geographically plausible. Allow realistic changes in viewpoint, lighting, weather, road surface, vegetation, buildings, vehicles, street furniture, and local visual details. Keep the scene coherent and photorealistic without copying the source image too literally."
+    assert config["negative_prompt"] == "illustration, painting, cartoon, surreal scene, impossible road geometry, reversed traffic, malformed roads, distorted perspective, deformed vehicles, duplicated objects, nonsensical signage, unreadable text artifacts, added country-name text, added flags, label watermark, severe blur, compression blocks, artificial textures"
+    assert config["strength"] == 0.35
+    assert config["guidance_scale"] == 5.0
+    assert config["num_inference_steps"] == 40
+    assert config["eta"] == 0.0
+    assert config["precision"] == "float32"
