@@ -5,14 +5,14 @@ import hashlib
 import json
 from pathlib import Path
 
-from ..artifacts import (BENCHMARK_ID, _resolve_artifact, atomic_write_bytes, canonical_csv_bytes, canonical_json_bytes,
-                         canonical_jsonl_bytes, read_benchmark_lock, resolve_cleaned_image, sha256_file, verify_stage)
+from ..artifacts import (ACCEPTED_POOLS, AUGMENTATION_POLICY, BENCHMARK_ID, _resolve_artifact,
+                         atomic_write_bytes, canonical_csv_bytes, canonical_json_bytes, canonical_jsonl_bytes,
+                         read_benchmark_lock, resolve_cleaned_image, sha256_file, verify_stage)
 from ..images import decode_rgb, pixel_sha256
 from ..split import GROUP_FIELDS, SPLIT_FIELDS
 from .diagnostics import log_dino_diagnostics, membership_sha256
 from .policy import next_candidate
 from .qc import build_qc_index, check_candidate
-from .review import RUBRIC
 
 
 def _csv(path):
@@ -58,21 +58,20 @@ def validate_dino_changes(before, after):
         raise ValueError("DINO changed non-diagnostic candidate fields")
 
 
-def validate_review_binding(row, review):
-    from datetime import datetime, timezone
-    try:
-        timestamp = datetime.fromisoformat(review["review_timestamp"].replace("Z", "+00:00"))
-        return (timestamp.utcoffset() == timezone.utc.utcoffset(timestamp) and
-                review.get("decision") == "accept" and review.get("reason") in (None, "") and
-                review.get("rubric_version") == RUBRIC and bool(review.get("reviewer_id")) and
-                row.get("reviewer_id") == review["reviewer_id"] and
-                row.get("review_timestamp") == review["review_timestamp"] and
-                row.get("review_rubric_version") == review["rubric_version"] and
-                row.get("review_reason") == review.get("reason") and
-                row.get("source_sha256") == review.get("source_sha256") and
-                row.get("output_sha256") == review.get("output_sha256"))
-    except (KeyError, TypeError, ValueError):
-        return False
+def _candidate_records(path):
+    rows = _jsonl(path)
+    if any(row.get("benchmark_id") != BENCHMARK_ID for row in rows):
+        raise ValueError("incompatible candidate benchmark identity")
+    if any(row.get("augmentation_policy") != AUGMENTATION_POLICY or row.get("filter_status") == "pending"
+           for row in rows):
+        raise ValueError("stale candidate history: archive legacy T039 artifacts and refresh the split lock")
+    if len({row["synthetic_id"] for row in rows}) != len(rows):
+        raise ValueError("duplicate candidate IDs")
+    return rows
+
+
+def _group_order(group):
+    return group["group"] == "tail", int(group["class_id"])
 
 
 def _recover_interrupted_freeze(root):
@@ -81,6 +80,8 @@ def _recover_interrupted_freeze(root):
         return
     journal = json.loads(journal_path.read_text(encoding="utf-8"))
     lock = read_benchmark_lock(root)
+    if lock.get("augmentation_policy") != AUGMENTATION_POLICY:
+        raise ValueError("stale interrupted freeze: archive legacy T039 artifacts and refresh the split lock")
     if lock.get("stage") == "augmented":
         verify_stage(root, "augmented")
         journal_path.unlink()
@@ -113,13 +114,7 @@ def freeze_augmented(root):
         return verify_stage(root, "augmented")
     if (root / "augmentation/manifests/holdout_incident.json").exists():
         raise ValueError("recorded holdout collision blocks freeze")
-    candidates = _jsonl(root / "augmentation/manifests/candidates.jsonl")
-    if any(row.get("benchmark_id") != BENCHMARK_ID for row in candidates):
-        raise ValueError("incompatible candidate benchmark identity")
-    review_path = root / "augmentation/manifests/reviews.jsonl"
-    decisions = _jsonl(review_path)
-    if any(row.get("rubric_version") != RUBRIC for row in decisions):
-        raise ValueError("incompatible review version")
+    candidates = _candidate_records(root / "augmentation/manifests/candidates.jsonl")
     expected = lock.get("membership_sha256")
     if membership_sha256(candidates) != expected:
         raise ValueError("frozen membership hash mismatch")
@@ -148,12 +143,6 @@ def freeze_augmented(root):
     class_ids = [int(row["class_id"]) for row in groups]
     if len(class_ids) != len(set(class_ids)):
         raise ValueError("duplicate class group IDs")
-    reviews = {row["synthetic_id"]: row for row in decisions}
-    if len(reviews) != len(decisions):
-        raise ValueError("duplicate review decisions")
-    if any(row.get("augmentation_type") == "da_fusion" and row.get("accepted") for row in diagnosed):
-        if lock["artifacts"].get("augmentation/manifests/reviews.jsonl") != sha256_file(review_path):
-            raise ValueError("reviews are not locked at membership stage")
     by_class = {class_id: [] for class_id in class_ids}
     for row in diagnosed:
         class_id = int(row["class_id"])
@@ -161,7 +150,7 @@ def freeze_augmented(root):
             raise ValueError("candidate class not present in groups")
         by_class[class_id].append(row)
     accepted, seen_file, seen_pixel = [], set(), set()
-    for group in sorted(groups, key=lambda row: int(row["class_id"])):
+    for group in sorted(groups, key=_group_order):
         class_id = int(group["class_id"])
         sources = [row for row in train if int(row["class_id"]) == class_id]
         attempts = sorted(by_class[class_id], key=lambda row: row["attempt_index"])
@@ -177,10 +166,6 @@ def freeze_augmented(root):
             qc = check_candidate(root, row, source, configs[row["augmentation_type"]], {"lock":lock, "context":qc_context, "accepted_file":seen_file, "accepted_pixel":seen_pixel})
             if not qc["passed"] or qc["incident"]:
                 raise ValueError(f'accepted candidate failed QC: {qc["reason"]}')
-            if row["augmentation_type"] == "da_fusion":
-                review = reviews.get(row["synthetic_id"], {})
-                if not validate_review_binding(row, review):
-                    raise ValueError("missing or invalid diffusion review")
             seen_file.add(row["output_sha256"])
             seen_pixel.add(row["output_pixel_sha256"])
             accepted.append(row)
@@ -222,6 +207,8 @@ def freeze_augmented(root):
                "augmentation/manifests/accepted.jsonl":canonical_jsonl_bytes(accepted),
                "augmentation/manifests/qc_summary.json":canonical_json_bytes(summary),
                "splits/train_augmented.csv":canonical_csv_bytes(union, SPLIT_FIELDS)}
+    for method, name in ACCEPTED_POOLS.items():
+        outputs[name] = canonical_jsonl_bytes(row for row in accepted if row["augmentation_type"] == method)
     verify_stage(root, "membership")
     transaction = root / "augmentation/manifests/.freeze-transaction"
     transaction.mkdir(parents=True, exist_ok=True)
@@ -252,13 +239,14 @@ from .diffusion import generate_diffusion, load_pinned_diffusion
 from .traditional import generate_traditional
 
 
-def generate_offline(root):
-    """Generate ordered candidates and stop at review or a frozen membership."""
+def generate_offline(root, *, tail_method="da_fusion"):
+    """Generate ordered candidates until automatic QC fills every quota."""
+    if tail_method != "da_fusion":
+        raise ValueError(f"{tail_method} is not implemented")
     import io
     from datetime import datetime, timezone
     from ..images import write_output_jpeg
     from .policy import plan_candidate
-    from .review import REASONS
     from ..preflight import _configure_determinism, verify_runtime
 
     root = Path(root).resolve()
@@ -275,16 +263,10 @@ def generate_offline(root):
     qc_context = build_qc_index(root)
     groups = _csv(root / "splits/class_groups.csv")
     candidates_path = root / "augmentation/manifests/candidates.jsonl"
-    reviews_path = root / "augmentation/manifests/reviews.jsonl"
-    records = _jsonl(candidates_path)
-    decisions = _jsonl(reviews_path)
-    if any(row.get("benchmark_id") != BENCHMARK_ID for row in records):
-        raise ValueError("incompatible candidate benchmark identity")
-    if any(row.get("rubric_version") != RUBRIC for row in decisions):
-        raise ValueError("incompatible review version")
-    if len({row["synthetic_id"] for row in records}) != len(records) or len({row["synthetic_id"] for row in decisions}) != len(decisions):
-        raise ValueError("duplicate candidate or review IDs")
-    reviews = {row["synthetic_id"]: row for row in decisions}
+    records = _candidate_records(candidates_path)
+    class_ids = {int(group["class_id"]) for group in groups}
+    if len(class_ids) != len(groups) or any(int(row["class_id"]) not in class_ids for row in records):
+        raise ValueError("invalid candidate class or duplicate class group")
     seen_file, seen_pixel = set(), set()
     pipeline = None
     def persist():
@@ -294,7 +276,7 @@ def generate_offline(root):
         if qc.get("incident"):
             atomic_write_bytes(root / "augmentation/manifests/holdout_incident.json", canonical_json_bytes({"reason":"holdout_collision"}))
             raise ValueError("holdout collision detected")
-    for group in sorted(groups, key=lambda value: int(value["class_id"])):
+    for group in sorted(groups, key=_group_order):
         class_id = int(group["class_id"])
         sources = [row for row in train if int(row["class_id"]) == class_id]
         attempts = sorted((row for row in records if int(row["class_id"]) == class_id), key=lambda row: int(row["attempt_index"]))
@@ -306,43 +288,13 @@ def generate_offline(root):
         if group["group"] not in ("medium", "tail"):
             raise ValueError("invalid class group")
         accepted = 0
-        unresolved = False
         for index, row in enumerate(attempts):
             expected = plan_candidate(method, class_id, index, sources)
             if any(row.get(key) != value for key,value in expected.items()):
                 raise ValueError("candidate history is inconsistent")
             source = next(item for item in sources if item["image_id"] == row["source_image_id"])
-            if row.get("filter_status") == "pending" and row["synthetic_id"] in reviews and not unresolved:
-                review = reviews[row["synthetic_id"]]
-                if (review.get("source_sha256") != row["source_sha256"] or review.get("output_sha256") != row["output_sha256"] or
-                    review.get("rubric_version") != RUBRIC or not review.get("reviewer_id")):
-                    raise ValueError("review does not match candidate")
-                try:
-                    timestamp = datetime.fromisoformat(review["review_timestamp"].replace("Z", "+00:00"))
-                    if timestamp.utcoffset() != timezone.utc.utcoffset(timestamp):
-                        raise ValueError("timestamp not UTC")
-                except (KeyError, TypeError, ValueError) as error:
-                    raise ValueError("invalid review timestamp") from error
-                decision, reason = review.get("decision"), review.get("reason")
-                if not ((decision == "accept" and reason in (None, "")) or (decision == "reject" and reason in REASONS)):
-                    raise ValueError("invalid review decision")
-                row.update({"reviewer_id":review["reviewer_id"], "review_timestamp":review["review_timestamp"],
-                            "review_rubric_version":RUBRIC, "review_reason":reason})
-                if decision == "accept":
-                    qc = check_candidate(root, row, source, config[method], {"lock":lock,"context":qc_context,"accepted_file":seen_file,"accepted_pixel":seen_pixel})
-                    if qc.get("incident"):
-                        row.update({"filter_status":"rejected", "accepted":False, "filter_reason":qc["reason"], "rejection_reason":qc["reason"], "qc_scores":qc["scores"]})
-                        persist()
-                    incident(qc)
-                    row.update({"filter_status":"accepted" if qc["passed"] else "rejected", "accepted":qc["passed"],
-                                "filter_reason":qc["reason"], "rejection_reason":qc["reason"], "qc_scores":qc["scores"]})
-                else:
-                    row.update({"filter_status":"rejected", "accepted":False, "filter_reason":reason, "rejection_reason":reason})
-                persist()
             status = row.get("filter_status")
             if status == "accepted" and row.get("accepted") is True:
-                if unresolved:
-                    raise ValueError("candidate was accepted before an earlier pending review")
                 qc = check_candidate(root, row, source, config[method], {"lock":lock,"context":qc_context,"accepted_file":seen_file,"accepted_pixel":seen_pixel})
                 incident(qc)
                 if not qc["passed"]:
@@ -352,21 +304,16 @@ def generate_offline(root):
                 accepted += 1
             elif status == "rejected" and row.get("accepted") is False:
                 pass
-            elif status == "pending" and row.get("accepted") is False:
-                unresolved = True
             else:
                 raise ValueError("candidate status is inconsistent")
             if accepted > budget:
                 raise ValueError("accepted quota exceeded")
-        if any(row.get("filter_status") == "pending" for row in attempts):
-            return "review_required"
         if accepted >= budget:
             next_candidate(group, sources, attempts)
             continue
         if not sources:
             raise ValueError("class has no original train sources")
-        pending = 0
-        while accepted + pending < budget and len(attempts) < 10 * budget:
+        while accepted < budget and len(attempts) < 10 * budget:
             attempt = plan_candidate(method, class_id, len(attempts), sources)
             source = next(item for item in sources if item["image_id"] == attempt["source_image_id"])
             source_path = resolve_cleaned_image(root, source["filepath"])
@@ -397,8 +344,7 @@ def generate_offline(root):
                    "augmentation_seed":314159, "generation_timestamp":datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
                    "output_width":decoded.width, "output_height":decoded.height, "output_sha256":sha256_file(output),
                    "output_pixel_sha256":pixel_sha256(decoded), "config_sha256":lock["artifacts"][f'augmentation/{method}/config.yaml'],
-                   "environment_lock_sha256":lock["artifacts"]["environment.lock.txt"], "reviewer_id":None,
-                   "review_timestamp":None, "review_rubric_version":None, "review_reason":None,
+                   "environment_lock_sha256":lock["artifacts"]["environment.lock.txt"],
                    "dino_source_similarity":None, "dino_nearest_sibling_similarity":None,
                    "dino_nearest_sibling_id":None, "dino_diagnostic_error":None}
             qc = check_candidate(root, row, source, config[method], {"lock":lock,"context":qc_context, "accepted_file":seen_file, "accepted_pixel":seen_pixel})
@@ -408,33 +354,27 @@ def generate_offline(root):
                 records.append(row)
                 persist()
             incident(qc)
-            status = "pending" if qc["passed"] and method == "da_fusion" else "accepted" if qc["passed"] else "rejected"
+            status = "accepted" if qc["passed"] else "rejected"
             row.update({"qc_passed":qc["passed"], "qc_scores":qc["scores"], "filter_status":status,
                         "accepted":status == "accepted", "filter_reason":qc["reason"], "rejection_reason":qc["reason"]})
             records.append(row)
             attempts.append(row)
             persist()
-            if status == "pending":
-                pending += 1
-            elif status == "accepted":
+            if status == "accepted":
                 accepted += 1
                 seen_file.add(row["output_sha256"])
                 seen_pixel.add(row["output_pixel_sha256"])
-        if pending:
-            return "review_required"
         if accepted < budget:
             atomic_write_bytes(root / "augmentation/manifests/shortage.json", canonical_json_bytes({"class_id":class_id, "required":budget, "accepted":accepted, "attempts":len(attempts)}))
             raise ValueError("shortage: candidate attempt cap exhausted")
     persist()
-    if not reviews_path.exists():
-        atomic_write_bytes(reviews_path, b"")
     verify_stage(root, "preflight")
     artifacts = dict(lock["artifacts"])
     artifacts["augmentation/manifests/candidates.jsonl"] = sha256_file(candidates_path)
-    artifacts["augmentation/manifests/reviews.jsonl"] = sha256_file(reviews_path)
     for row in records:
         if row["accepted"]:
             artifacts[row["synthetic_path"]] = row["output_sha256"]
-    new_lock = dict(lock, stage="membership", artifacts=artifacts, membership_sha256=membership_sha256(records))
+    new_lock = dict(lock, stage="membership", artifacts=artifacts,
+                    augmentation_policy=AUGMENTATION_POLICY, membership_sha256=membership_sha256(records))
     atomic_write_bytes(root / "benchmark_lock.json", canonical_json_bytes(new_lock))
     return "membership_frozen"

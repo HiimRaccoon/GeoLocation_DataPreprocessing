@@ -60,7 +60,7 @@ def test_dino_preprocessing_is_rgb_letterboxed_with_zero_normalized_padding():
 
 def test_log_dino_stages_metadata_without_unlocking_membership(tmp_path, monkeypatch):
     import json
-    from geoguessr_benchmark.artifacts import _REQUIRED, STAGES, atomic_write_bytes, canonical_json_bytes, canonical_jsonl_bytes, sha256_file
+    from geoguessr_benchmark.artifacts import AUGMENTATION_POLICY, _REQUIRED, STAGES, atomic_write_bytes, canonical_json_bytes, canonical_jsonl_bytes, sha256_file
     from geoguessr_benchmark.augmentation import diagnostics
     import geoguessr_benchmark.preflight as preflight
     monkeypatch.setattr(preflight,"verify_runtime",lambda root,lock:None)
@@ -75,7 +75,8 @@ def test_log_dino_stages_metadata_without_unlocking_membership(tmp_path, monkeyp
             if not (tmp_path / name).exists():
                 atomic_write_bytes(tmp_path / name, b"fixture")
             lock["artifacts"][name] = sha256_file(tmp_path / name)
-    lock.update({"stage":"membership", "membership_sha256": membership_sha256([candidate]), "model_snapshot":{}})
+    lock.update({"stage":"membership", "augmentation_policy":AUGMENTATION_POLICY,
+                 "membership_sha256": membership_sha256([candidate]), "model_snapshot":{}})
     atomic_write_bytes(tmp_path / "benchmark_lock.json", canonical_json_bytes(lock))
     monkeypatch.setattr(diagnostics, "_load_dino_model", lambda root, snapshot: object())
     def embedding(model, root, row, kind, train_index):

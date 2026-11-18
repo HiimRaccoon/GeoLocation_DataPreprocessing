@@ -4,7 +4,7 @@ import json
 import pytest
 import torch
 
-from geoguessr_benchmark.artifacts import _REQUIRED, STAGES, BENCHMARK_ID, atomic_write_bytes, canonical_json_bytes, sha256_file
+from geoguessr_benchmark.artifacts import AUGMENTATION_POLICY, _REQUIRED, STAGES, BENCHMARK_ID, atomic_write_bytes, canonical_json_bytes, sha256_file
 from geoguessr_benchmark.experiment import initialize_pairs
 
 
@@ -20,7 +20,7 @@ def test_initializations_are_seeded_paired_and_locked(tmp_path, monkeypatch):
     atomic_write_bytes(weights, b"weights")
     artifacts = {name: sha256_file(tmp_path / name) for stage in STAGES[:STAGES.index("augmented") + 1] for name in _REQUIRED[stage]}
     artifacts["models/efficientnet.pt"] = sha256_file(weights)
-    lock = {"schema_version":1,"benchmark_id":BENCHMARK_ID,"stage":"augmented", "artifacts":artifacts,
+    lock = {"schema_version":1,"benchmark_id":BENCHMARK_ID,"stage":"augmented","augmentation_policy":AUGMENTATION_POLICY, "artifacts":artifacts,
             "model_snapshot":{"files":{"efficientnet_weights":{"path":"models/efficientnet.pt","sha256":sha256_file(weights)}}}}
     atomic_write_bytes(tmp_path / "benchmark_lock.json", canonical_json_bytes(lock))
     monkeypatch.setattr(config, "load_config", lambda root: {"benchmark":{"batch_size_effective": 16}})

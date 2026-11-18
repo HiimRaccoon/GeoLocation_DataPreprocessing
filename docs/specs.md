@@ -6,21 +6,26 @@
 
 **Ngôn ngữ báo cáo:** tiếng Việt; tên trường dữ liệu và artifact dùng tiếng Anh.
 
-### Thay đổi ở v1.2
+### Chính sách augmentation v1.2
 
-Benchmark ID là `geoguessr50k_country_augmentation_v1_2`. Cả hai condition dùng cùng ảnh cleaned sau khi che hai HUD cố định. Traditional và SD 1.5 img2img dùng kích thước native; diffusion chỉ thêm reflection padding tối thiểu cho VAE rồi crop bỏ padding. Classifier tiếp tục dùng letterbox ImageNet mean ở 384 × 160. Diffusion giữ FP32 và human review bắt buộc; DINO chỉ ghi chẩn đoán.
-
+Benchmark ID là `geoguessr50k_country_augmentation_v1_2`. Candidate và lock membership dùng `augmentation_policy: automatic_qc_v1`. Hai condition dùng cùng dữ liệu đã che hai HUD. Traditional và SD 1.5 img2img FP32 dùng kích thước native. Diffusion thêm reflection padding tối thiểu rồi crop bỏ padding. Classifier letterbox về 384 × 160 bằng ImageNet mean. Automatic QC quyết định membership; DINO và review chỉ phục vụ phân tích.
 ## 1. Câu hỏi và phạm vi
 
 Benchmark kiểm tra: **với cùng model, cấu hình training và tập validation/test thật, việc bổ sung ảnh augmented/synthetic cho minority classes có làm thay đổi performance, đặc biệt Macro-F1, hay không?**
 
-Đây là benchmark độc lập, không sử dụng E1/E2/E3 cũ. Chỉ có hai conditions và ba training seeds, tổng cộng sáu runs. Không tìm backbone tốt nhất, không tuning hyperparameter, không chọn cấu hình generation theo validation/test score.
+| Component | Dữ liệu hoặc phương pháp |
+|---|---|
+| E0 | Cleaned original real train đã freeze |
+| E1 | Traditional augmentation cho medium |
+| E2 | DA-Fusion cho tail |
+| E3 | Geo-adapted DiSC-DS cho tail, dự kiến trong tương lai |
 
 | Condition | Training dataset | Validation/Test |
 |---|---|---|
-| `original` — Condition A | Cleaned real train | Fixed cleaned real splits |
-| `augmented` — Condition B | Cùng cleaned real train + offline traditional + offline diffusion | Cùng các splits của A |
+| `original` — A, Original | E0 | Fixed cleaned real splits |
+| `augmented` — B_DAFusion, Traditional + DA-Fusion | E0 + E1 + E2 | Cùng các splits của A |
 
+A và B_DAFusion ghép cặp theo seed 42, 123 và 2026, tổng cộng sáu classifier runs. E1 và E2 là thành phần dữ liệu của B_DAFusion. Generation không chọn cấu hình theo validation/test score.
 Biến can thiệp duy nhất là **training dataset**. Model, pretrained weights, seed ghép cặp, preprocessing, batch size, loss, optimizer, LR, scheduler theo tiến độ epoch, số epochs, checkpoint policy và metrics giống nhau. B sử dụng đúng một bộ ảnh offline đã khóa cho cả ba seeds.
 
 Trong đặc tả này, “original train” hoặc “ảnh thật gốc” trong các split là ảnh real đã clean, chưa qua augmentation. Raw chỉ là đầu vào của bước `clean`.
@@ -142,7 +147,7 @@ Số ảnh cần **accepted** là `target_c - n_c`, không phải số lần th�
 
 Trong mỗi class, sắp source theo filepath. Attempt thứ `j`, bắt đầu từ 0, chọn `source[j mod n_c]`. Seed candidate là 32 bit đầu của SHA-256 chuỗi `aug-v1|314159|augmentation_type|class_id|j` theo big-endian. Lưu seed và toàn bộ tham số thực tế, không chỉ seed gốc.
 
-Xử lý attempts theo thứ tự tăng dần kể cả khi generation song song. Lấy accepted candidates theo thứ tự attempt đến khi đủ budget. Giới hạn `10 * required_accepted` attempts/class, không thay strength/threshold/prompt để bù quota. Nếu chưa đủ target, ghi shortage và dừng trước main training; không tự đổi phương pháp hay dùng rejected samples. Một thay đổi cấu hình cần phiên bản benchmark mới trước khi chạy lại toàn bộ comparison.
+Sinh E1 trước E2. Trong mỗi phương pháp, xử lý class ID rồi attempt index tăng dần. Candidate qua automatic QC được nhận ngay; candidate bị loại ghi reason và chuyển sang attempt kế tiếp. Giới hạn `10 * required_accepted` attempts/class. Hết cap khi thiếu quota thì ghi `augmentation/manifests/shortage.json` và chặn freeze. Threshold, prompt và quota giữ theo cấu hình khóa.
 
 Đầu ra JPEG RGB, quality 95, subsampling 0, không EXIF; decode lại file đã lưu để chạy QC. Các rejected records vẫn giữ metadata và reason. Manifest accepted cùng pixel/file hashes được freeze; không generate lại cho từng training seed.
 
@@ -170,7 +175,7 @@ Không dùng flip ngang/dọc, rotation lớn, hue shift mạnh, aggressive crop
 
 Default là **DA-Fusion-inspired Stable Diffusion image-to-image**, trường manifest `augmentation_type=da_fusion`, `method_variant=sd15_img2img_fixed`. Đề bài cho phép hướng DA-Fusion / Stable Diffusion img2img; ở đây khóa biến thể img2img có conditioning theo class và source. Không tuyên bố tái lập nguyên bản toàn bộ DA-Fusion paper, không thêm textual inversion, LoRA hay fine-tuning diffusion trong default. Nếu sau này yêu cầu tái lập paper, đó là thay đổi đặc tả cần được ghi nhận trước benchmark. Tham chiếu phương pháp gốc: [DA-Fusion](https://arxiv.org/abs/2302.07944).
 
-Luồng: `cleaned real train JPEG → native RGB → minimal reflection pad /8 → VAE encode → img2img → VAE decode → crop theo source_bbox → native JPEG content-only → QC/hash audit → human geographic review`. Resize cho classifier chỉ diễn ra tại train/eval. DINO similarity được ghi riêng cho chẩn đoán.
+Luồng generation dùng cleaned real train JPEG → native RGB → minimal reflection pad /8 → VAE encode → img2img → VAE decode → crop theo `source_bbox` → native JPEG content-only → automatic QC và hash audit → accept hoặc reject. Resize cho classifier diễn ra tại train/eval.
 
 ### 7.2. Fixed generation configuration
 
@@ -229,15 +234,16 @@ illustration, painting, cartoon, flipped road, reversed traffic, altered writing
 
 Prompt không đảm bảo label preservation. Không dùng quốc kỳ, text tên nước hoặc cue nhân tạo để mã hóa label. Không tự viết thêm prompt theo ảnh sau khi xem evaluation. Giữ safety checker theo model snapshot; flagged outputs bị reject và ghi reason, không thay pipeline để lấy lại ảnh.
 
-### 7.3. Geographic cues và human review
+### 7.3. Kiểm tra định tính tùy chọn
 
-Mọi diffusion candidate vượt automatic QC phải được người review bằng cách so sánh **source train image với generated content-only file cuối sau crop**, trước training. Review không truy cập val/test hoặc classifier scores. Kiểm tra road geometry, traffic side, lane markings, signs/text, utility poles, architecture, vegetation, vehicle configuration, Street View appearance và cues đặc trưng quốc gia còn nhất quán.
+`review-export` tạo gói offline so sánh cleaned train source với JPEG cuối. Có thể ghi chú về road layout, traffic side, lane markings, signs/text, utility poles, architecture, vegetation, terrain và lỗi hình ảnh. `review-import` lưu annotations riêng trong `reviews.jsonl`. Reviewer ID, timestamp và quyết định chỉ thuộc annotation, bên ngoài candidate records, lock và membership hash.
 
-Reject nếu có hallucinated signs, chữ/ngôn ngữ bị đổi, đảo traffic side, road structure vô lý, kiến trúc thay đổi quá mạnh, object phi thực tế hoặc synthetic texture rõ. Với source có text đọc được, text bị sửa/mất mà không xác minh được là lý do reject. Nếu khó xác định label preservation thì `reject_ambiguous`, không mặc định accept. Reviewer ID, UTC timestamp, rubric version, quyết định và reason phải được ghi. Review toàn bộ diffusion outputs được chấp nhận; training chỉ bắt đầu sau khi review kết thúc và manifest freeze.
+### 7.4. E3 dự kiến — Geo-adapted DiSC-DS
 
+E3 sẽ thử cải thiện bảo toàn dấu hiệu địa lý trong ảnh tail. Ý tưởng là sinh variants từ cleaned tail sources, dùng cue địa lý để chấm điểm hoặc chọn, rồi chạy automatic QC với cùng quota `min(100, 5*n_c) - n_c` như E2. `B_GeoDiSC = E0 + E1 + E3` sẽ dùng lại nguyên pool E1, cùng real split, training config và seeds để so sánh với B_DAFusion. Candidate count, cách thích nghi DiSC-DS, scoring/embedding model, selection, thresholds, diversity/clustering, prompt và generation đều TBD. `augment --tail-method geo_disc_ds` trả lỗi chưa triển khai.
 ## 8. Quality-control stage
 
-QC chạy trên file output cuối, trước khi synthetic tham gia train. **Traditional: automatic QC only. Diffusion: automatic basic QC + hash duplicate audit + DINO diagnostic logging + mandatory human geographic-cue review.** DINO không quyết định acceptance/rejection; human review quyết định geographic consistency cho diffusion. Các ngưỡng blank/blur cố định dưới đây không được hiệu chỉnh theo val/test.
+Automatic QC và hash audit trên JPEG cuối quyết định acceptance cho cả traditional và diffusion. Các ngưỡng blank/blur cố định dưới đây được áp dụng trước khi freeze.
 
 ### 8.1. Basic và visual checks
 
@@ -245,7 +251,7 @@ QC chạy trên file output cuối, trước khi synthetic tham gia train. **Tra
 2. Trên grayscale uint8 vùng ảnh thật, standard deviation phải `>= 5` và tỷ lệ pixel có intensity `<=2` hoặc `>=253` phải `< 0.98`; nếu không reject blank/saturation.
 3. Kiểm tra source ID/hash thuộc ORIGINAL TRAIN, label không đổi và transform provenance khớp fixed policy. Traditional chỉ cần automatic checks về decode/RGB, dimensions, non-blank, exact duplicates và provenance; không yêu cầu reviewer xem từng ảnh hoặc review toàn bộ contact sheets.
 4. Với **diffusion**, giữ blur check: lấy toàn bộ decoded content-only file và cleaned source ở native dimensions, rồi resize giữ aspect ratio về long edge 384. Không crop lại file theo `source_bbox`. Dùng grayscale `[0,255]`, Laplacian kernel `[[0,1,0],[1,-4,1],[0,1,0]]`, reflect boundary. Yêu cầu `variance(output) >= max(5, 0.5*variance(source))`. Không dùng generation padding làm vùng tính blur.
-5. Với **diffusion**, reject severe distortion/visual generation failure, artifacts hoặc geographic inconsistency theo mandatory human review ở mục 7.3. Nếu ambiguous dùng `reject_ambiguous`. Không dựa chỉ vào blur metric để kết luận ảnh đúng label. Traditional không có human-review gate.
+5. Với diffusion, safety flag từ pipeline tạo rejection. QC kiểm tra các điều kiện kỹ thuật và provenance; khả năng bảo toàn nhãn địa lý vẫn là giới hạn khi diễn giải.
 
 ### 8.2. Exact duplicates và DINO diagnostics
 
@@ -255,13 +261,13 @@ Với diffusion, dùng frozen `dino_vits16` từ [DINO official repository](http
 
 Log `dino_source_similarity` là cosine giữa source/output, và `dino_nearest_sibling_similarity` là cosine cao nhất với diffusion output khác cùng source trong tập accepted cuối cùng, không so ảnh với chính nó. Lưu cả ID sibling gần nhất; nếu không có sibling hợp lệ thì ghi `null` và lý do. Ghi diagnostics cho accepted và rejected candidates đọc được; lỗi tính embedding ghi `null` cùng diagnostic error.
 
-**DINO similarity MUST NOT determine synthetic image acceptance/rejection.** Hoàn tất quyết định QC/human review độc lập với DINO; reviewer không dùng DINO score để chọn ảnh. Tính nearest-sibling diagnostics sau khi membership accepted đã khóa, không chọn lại samples theo scores. Không có hard similarity threshold, không tuning/search space; DINO lỗi hoặc score thiếu không làm sample bị reject. Các scores chỉ phục vụ audit/phân tích sau experiment vì chưa calibrated trên GeoGuessr-50k và benchmark không thêm phương pháp DINO-based sample selection. Lưu blur scores của diffusion riêng; Traditional không cần DINO diagnostics hoặc human review.
+DINO chạy sau khi khóa membership và chỉ ghi diagnostics. Membership hash trước/sau phải giống nhau. Lỗi embedding hoặc score thiếu ghi diagnostic error. Traditional giữ các trường DINO rỗng.
 
-Mọi failure phải có reason enum, ví dụ `unreadable`, `invalid_rgb`, `invalid_dimensions`, `blank`, `invalid_source`, `invalid_provenance`, `blur`, `exact_duplicate`, `geographic_cue_changed`, `generation_artifact`, `safety_flag`, `reject_ambiguous`. `blur` và các human-review reasons chỉ áp dụng diffusion. Không có rejection reason dựa trên DINO similarity; không dùng classifier validation/test score làm bộ lọc.
+Automatic rejection có reason như `unreadable`, `invalid_rgb`, `invalid_dimensions`, `blank`, `invalid_source`, `invalid_provenance`, `blur`, `exact_duplicate` hoặc `safety_flag`.
 
 ## 9. Augmentation manifest và provenance
 
-`augmentation/manifests/candidates.jsonl` chứa `benchmark_id` và provenance cho mọi attempt; `accepted.jsonl` chỉ chứa final accepted. Nested fields lưu JSON, không serialize Python repr.
+`augmentation/manifests/candidates.jsonl` lưu mọi attempt với `benchmark_id`, `augmentation_policy` và provenance. Khi freeze, `accepted.jsonl` lưu toàn bộ ảnh được nhận, còn `accepted_traditional.jsonl` và `accepted_da_fusion.jsonl` tách membership theo phương pháp và trỏ tới cùng JPEG. Pool E1 có thể được tham chiếu lại bằng manifest đã khóa và output hashes.
 
 Trường bắt buộc chung:
 
@@ -271,21 +277,20 @@ source_sha256, class_name, class_id, source_split,
 augmentation_type, method_variant, augmentation_parameters,
 augmentation_seed, generation_seed, attempt_index,
 generation_timestamp, filter_status, filter_reason,
-accepted, rejection_reason, qc_scores, reviewer_id, review_timestamp,
+accepted, rejection_reason, qc_passed, qc_scores,
 dino_source_similarity, dino_nearest_sibling_similarity,
 dino_nearest_sibling_id, dino_diagnostic_error,
 output_width, output_height, output_sha256, output_pixel_sha256,
 config_sha256, environment_lock_sha256
 ```
 
-Trường diffusion bổ sung: `diffusion_model`, `model_revision`, `weights_sha256`, `prompt`, `negative_prompt`, `strength`, `guidance_scale`, `num_inference_steps`, actual timesteps, scheduler config, `generation_canvas_width`, `generation_canvas_height`, `precision=float32`, `source_bbox`, `source_content_width`, `source_content_height`, padding mode/offsets theo mục 7.2, `output_content_only=true`. `source_bbox` là tọa độ half-open trên canvas trước crop và bắt buộc giữ trong manifest. `synthetic_path` trỏ tới content-only JPEG; `output_width`/`output_height` bằng bbox dimensions, còn output hashes tính trên final file/pixels sau crop và JPEG decode. Không dùng generation canvas width/height thay final-file dimensions. Hai similarity fields và sibling ID chỉ là diagnostic metadata, không tham gia acceptance. Traditional ghi `null` cho DINO, reviewer fields và các trường diffusion không áp dụng; mọi sampled transform lưu trong `augmentation_parameters`.
+Diffusion ghi model/revision, weights SHA-256, prompt/negative prompt, strength, guidance, requested steps, actual timesteps, scheduler config, FP32, canvas dimensions, `source_bbox`, content dimensions, padding và `output_content_only=true`. `source_bbox` dùng tọa độ half-open trên canvas trước crop. Output width/height bằng native source dimensions; hashes lấy từ JPEG cuối và decoded RGB. Traditional ghi sampled transforms trong `augmentation_parameters`.
 
-`filter_status` là `pending`, `accepted` hoặc `rejected`; chỉ `accepted=true` và `filter_status=accepted` được đưa vào `splits/train_augmented.csv`. Manifest này là union original train và accepted outputs, không lặp original record, không chứa rejected/pending. Mọi source phải có `source_split=train` và provenance một bước về real image.
+`filter_status` là `accepted` hoặc `rejected`. `splits/train_augmented.csv` là manifest B_DAFusion, hợp chính xác của `splits/train.csv` và hai accepted pools E1/E2. Mọi source có `source_split=train` và truy về một cleaned original image.
 
 Preflight và generation ghi scheduler config dưới dạng JSON chuẩn hóa. Danh sách tên `_use_default_values` được sắp xếp vì thứ tự của nó không mang ý nghĩa. Mọi giá trị cấu hình và thứ tự các danh sách còn lại đều được đối chiếu với preflight. Khác biệt có ý nghĩa hoặc `actual_timesteps` sai giá trị hay thứ tự làm provenance không hợp lệ.
 
-V1.1 không tương thích với v1.2. Lock v1.2 từ trước bản sửa danh tính cũng cần tạo lại từ inventory/split đã sửa vì ID và membership có thể khác. Có thể dùng lại cleaning output nếu manifest, raw và cleaned đều được xác minh; giữ các split, preflight và artifact phụ thuộc cũ ở run root riêng. Giữ khóa, manifests, review và checkpoint cũ ở run root riêng. Với v1.2, bắt đầu từ cùng raw JPEG trong run root mới, chạy `clean` → `inventory` → `split` → `verify --stage splits` → GPU `preflight` → `augment`. Tạo lại candidates, review, membership và train union theo v1.2. GPU preflight khóa lại `code_sha256`.
-
+V1.1 và split v1.2 từ trước bản sửa danh tính cần xử lý riêng. Với T037 đã khóa bằng phiên bản split đúng, giữ nguyên ảnh, inventory, mapping, train/val/test và group assignment. `refresh-split-lock --previous-spec PATH` đối chiếu SHA-256 của spec cũ và các artifact T037, rồi khóa spec hiện tại ở stage `splits`. Source/config mới cần chạy lại GPU preflight. Archive T039 cũ trước khi refresh; pending hoặc membership lock thuộc workflow cũ bị từ chối. Xem [quy trình server](plan.md#9-hướng-dẫn-chạy-và-ưu-tiên-kiểm-chứng).
 ## 10. Model và classifier preprocessing
 
 Chỉ dùng `torchvision.models.efficientnet_b0`, weights `EfficientNet_B0_Weights.IMAGENET1K_V1`; thay lớp linear cuối thành `1280 -> 124`, giữ dropout mặc định 0.2, fine-tune toàn bộ backbone, BatchNorm ở train mode khi train. Không thay architecture giữa conditions. Xem [Torchvision EfficientNet-B0](https://docs.pytorch.org/vision/stable/models/generated/torchvision.models.efficientnet_b0.html).
@@ -309,6 +314,7 @@ Diffusion synthetic JPEG sau crop và traditional JPEG có đúng native dimensi
 ```yaml
 benchmark_id: geoguessr50k_country_augmentation_v1_2
 conditions: [original, augmented]
+components: {E0: original, E1: traditional, E2: da_fusion, E3: geo_disc_ds}
 model: efficientnet_b0
 weights: IMAGENET1K_V1
 num_classes: 124
@@ -490,6 +496,8 @@ project/
     da_fusion/config.yaml
     manifests/candidates.jsonl
     manifests/accepted.jsonl
+    manifests/accepted_traditional.jsonl
+    manifests/accepted_da_fusion.jsonl
     manifests/qc_summary.json
   initializations/seed_<seed>.pt
   runs/
@@ -537,7 +545,7 @@ Thứ tự triển khai sau khi đặc tả được chấp nhận:
 1. Chạy `clean`, xác minh cleaning manifest, rồi inventory cleaned, mapping, duplicate audit và baseline.
 2. Tạo deterministic original split, group assignments, thống kê evaluable classes; khóa manifests.
 3. Resolve/pin environment và model artifacts; materialize fixed configs, memory-only batch preflight.
-4. Generate offline đúng source train; traditional chạy automatic QC, diffusion chạy automatic QC/hash audit và mandatory human geographic review. Khóa accepted membership độc lập DINO, log DINO diagnostics, freeze dataset và provenance. Fail nếu thiếu quota hoặc QC/leakage audit chưa pass.
+4. Generate từ cleaned original train. E1/E2 tự động accept hoặc reject theo QC, đủ quota mới khóa membership. Chạy DINO diagnostics và xác minh hash trước khi publish accepted pools và union. Holdout collision hoặc shortage chặn freeze.
 5. Tạo initial states ghép cặp, xác minh mọi invariant, chạy đúng sáu training runs với cùng config chung.
 6. Khóa best checkpoints theo validation, final test evaluation, aggregate/report.
 
@@ -549,22 +557,19 @@ Một run hợp lệ khi shared config hash giống năm runs còn lại sau khi
 
 1. **Extreme-tail thiếu real evaluation samples:** singleton không có val/test; hai ảnh chỉ có train/test. Tail score chỉ mô tả subset evaluable và không chứng minh hiệu quả trên các class bị thiếu.
 2. **Support rất nhỏ:** một prediction đổi có thể làm per-class F1 thay đổi mạnh. Luôn công bố support và per-seed metrics; không xem tăng F1 của class một sample là bằng chứng chắc chắn.
-3. **Label corruption/hallucination:** diffusion có thể đổi signs, language, traffic side hay architecture; prompt và DINO diagnostics không bảo đảm label. Diffusion bắt buộc review source/output, lưu rejection reasons; traditional chỉ automatic QC theo policy conservative.
+3. **Label corruption/hallucination:** diffusion có thể đổi signs, writing, traffic side hoặc architecture. Automatic QC có thể giữ cảnh sai nhãn. Gói review định tính hỗ trợ phân tích lỗi.
 4. **Near-copy và diversity hạn chế:** nhiều descendants từ một source không thay thế nhiều cảnh thật độc lập. Hash reject exact duplicates; DINO chỉ log diagnostics, không loại near-copy theo similarity. Giới hạn 5× giảm nguy cơ phóng đại dữ liệu singleton.
 5. **Domain gap:** diffusion texture, generation resolution hoặc JPEG artifacts có thể tạo shortcut và giảm real-test performance. Report cả deterioration, acceptance rate và model/generation parameters.
 6. **Macro-F1 có giới hạn phạm vi:** val và test có evaluable label sets khác nhau; không so trực tiếp hai scores như cùng population. Model vẫn dự đoán 124 classes.
 7. **Leakage:** source descendants, exact duplicates, panorama gần nhau hoặc external pretrained contamination có thể làm kết quả lạc quan. Audit provenance/hash; ghi rõ spatial independence và pretrained data overlap chưa xác minh nếu không có metadata.
 8. **Exposure/compute khác nhau:** 20 epochs trên B dẫn đến thêm steps và thêm lượt xem ảnh. Kết luận thuộc chính sách thêm dữ liệu ở fixed epochs; không tách augmentation content khỏi tổng optimization exposure.
 9. **Combined intervention:** hai conditions không thể quy improvement riêng cho traditional hay diffusion. Group results hỗ trợ mô tả, không phải ablation nhân quả từng phương pháp.
-10. **Automatic QC và người review diffusion:** blank/blur checks có thể reject cảnh hợp lệ hoặc giữ cảnh sai; diffusion reviewer judgment không hoàn toàn tự động reproducible. Traditional không có human-review gate. Freeze accepted files, diagnostic scores và diffusion review logs; không chỉnh automatic thresholds theo evaluation và không dùng DINO để lựa chọn samples.
+10. **Automatic QC:** blank/blur checks có thể loại cảnh hợp lệ hoặc giữ cảnh sai. Báo reject reasons, quotas và giới hạn QC. Freeze accepted JPEGs, provenance và diagnostics.
 11. **Ba seeds và một split:** std chỉ phản ánh variation qua training seeds trên split này. Không diễn giải như uncertainty qua locations, data collection hoặc tất cả possible splits.
 
 ## 19. Fixed decisions bổ sung từ đặc tả
 
-Các defaults cần thiết nhưng đề bài chưa chốt hoàn toàn: round-half-up 10% cho split; hash-based deterministic ordering; singleton target 5 total; augmentation seed 314159; transform distributions và k=1–2; SD 1.5 img2img variant, DDIM/strength/guidance/steps; generation native với reflection padding tối thiểu đến bội số 8, crop theo `source_bbox` và lưu generated content-only; JPEG encoding; automatic QC với blank/blur checks đúng phạm vi; DINO diagnostic logging không có acceptance threshold; human review chỉ diffusion; bounded retry/shortage policy; classifier RGB padding mean; AdamW betas/eps/decay policy; warmup/cosine step formula; FP32; batch fallback memory-only; deterministic execution; checkpoint tie-break; evaluable-label macro denominator; group metrics từ full confusion matrix; sample std ddof=1 và paired deltas.
-
-Tất cả là fixed configuration, không phải search space. Exact environment versions/revisions, batch size được chọn bằng memory-only preflight và fingerprints phải được ghi vào lock trước main experiment. Không có kết quả experiment nào được giả định trong tài liệu này.
-
+Các defaults cố định gồm round-half-up cho split, hash-based ordering, singleton target 5 total, augmentation seed 314159, traditional k=1–2, SD 1.5 img2img với DDIM/FP32 và minimal native reflection padding, JPEG encoding, automatic QC, bounded retries và DINO diagnostic-only. Training giữ ImageNet-mean letterbox, AdamW, warmup/cosine, batch ladder, checkpoint tie-break, evaluable-label macro denominator, group metrics, sample std ddof=1 và paired deltas.
 ## 20. Final checklist
 
 - [ ] Original dataset verified
@@ -583,14 +588,14 @@ Tất cả là fixed configuration, không phải search space. Exact environmen
 - [ ] Native diffusion canvas padded to multiples of 8; JPEG cropped to cleaned source dimensions
 - [ ] Diffusion output cropped to source_bbox before saving content-only JPEG
 - [ ] Final synthetic dimensions equal source_bbox dimensions; source_bbox retained in manifest
-- [ ] QC, hashes, DINO diagnostics and diffusion human review use final content-only files
+- [ ] QC, hashes and DINO diagnostics use final content-only files
 - [ ] Classifier letterboxes cropped diffusion content with ImageNet-mean padding
 - [ ] Diffusion generation uses FP32
 - [ ] Classifier input fixed at 384×160
 - [ ] DINO similarity logged for diagnostics only
 - [ ] No DINO hard acceptance threshold
 - [ ] Traditional augmentation uses automatic QC only
-- [ ] Diffusion outputs receive human geographic-cue review
+- [ ] DA-Fusion acceptance uses automatic QC; qualitative review is optional
 - [ ] Targets met; accepted synthetic files and provenance frozen
 - [ ] EfficientNet-B0 fixed
 - [ ] Same ImageNet pretrained weights and paired initial states

@@ -343,6 +343,7 @@ def run_preflight(root):
     root = Path(root).resolve()
     lock = verify_stage(root, "splits")
     if lock["stage"] != "splits":
+        verify_source(root)
         return verify_stage(root, "preflight")
     config = load_config(root)
     _configure_determinism()

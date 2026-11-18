@@ -1,5 +1,6 @@
 benchmark_id: geoguessr50k_country_augmentation_v1_2
 conditions: [original, augmented]
+components: {E0: original, E1: traditional, E2: da_fusion, E3: geo_disc_ds}
 model: efficientnet_b0
 weights: IMAGENET1K_V1
 num_classes: 124

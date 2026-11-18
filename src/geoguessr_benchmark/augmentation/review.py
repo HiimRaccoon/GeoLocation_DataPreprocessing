@@ -1,4 +1,4 @@
-"""Offline diffusion review queue and hash-bound decision import."""
+"""Optional qualitative diffusion inspection and hash-bound annotation import."""
 import csv
 from datetime import datetime, timezone
 import json
@@ -60,6 +60,12 @@ def _validated_pair(root, row, train, holdout):
 def export_review_queue(root, output):
     root = Path(root).resolve()
     lock = verify_stage(root, "splits")
+    output_path = (root / output).resolve()
+    manifests = root / "augmentation/manifests"
+    if (output_path in {(root / name).resolve() for name in (*lock["artifacts"], "benchmark_lock.json")}
+            or output_path.is_relative_to(root / "data")
+            or (output_path.is_relative_to(manifests) and output_path != manifests / "review_queue.jsonl")):
+        raise ValueError("review export cannot overwrite benchmark artifacts")
     train = _train(root)
     holdout = _holdout_hashes(root)
     rows = _jsonl(root / "augmentation/manifests/candidates.jsonl")
@@ -80,21 +86,20 @@ def export_review_queue(root, output):
     queue = []
     pairs = []
     for row in rows:
-        if row.get("augmentation_type") != "da_fusion" or row.get("filter_status") != "pending" or row.get("qc_passed") is not True or row["synthetic_id"] in reviewed:
+        if (row.get("augmentation_type") != "da_fusion" or row.get("filter_status") not in ("accepted", "pending")
+                or row.get("qc_passed") is not True or row["synthetic_id"] in reviewed):
             continue
         sid = row["synthetic_id"]
         if not isinstance(sid, str) or not re.fullmatch("[0-9a-f]{64}", sid) or any(x["synthetic_id"] == sid for x in queue):
             raise ValueError("invalid or duplicate synthetic ID")
-        try:
-            source, generated = _validated_pair(root, row, train, holdout)
-        except ValueError as error:
-            if "holdout collision" in str(error):
-                from ..artifacts import canonical_json_bytes
-                atomic_write_bytes(root / "augmentation/manifests/holdout_incident.json", canonical_json_bytes({"reason":"holdout_collision"}))
-            raise
+        source, generated = _validated_pair(root, row, train, holdout)
         if qc_context is not None:
+            files, pixels = accepted_files, accepted_pixels
+            if row.get("accepted") is True:
+                files = files - {row["output_sha256"]}
+                pixels = pixels - {row["output_pixel_sha256"]}
             qc = check_candidate(root, row, train[row["source_image_id"]], qc_config,
-                                 {"context":qc_context,"accepted_file":accepted_files,"accepted_pixel":accepted_pixels})
+                                 {"context":qc_context,"accepted_file":files,"accepted_pixel":pixels})
             if not qc["passed"]:
                 raise ValueError(f'review candidate failed automatic QC: {qc["reason"]}')
         queue.append({"synthetic_id": sid, "attempt_index": row["attempt_index"], "source_image_id": row["source_image_id"],
@@ -120,9 +125,6 @@ def export_review_queue(root, output):
         if target.exists():
             target.rename(base / ("review_previous_" + uuid.uuid4().hex))
         temp.rename(target)
-        output_path = Path(output)
-        if not output_path.is_absolute():
-            output_path = root / output_path
         atomic_write_bytes(output_path, payload)
     except Exception:
         if temp.exists():
@@ -186,7 +188,7 @@ def import_review_decisions(root, input):
 
 _HTML = '''<!doctype html><html lang="en"><meta charset="utf-8"><title>Geographic cue review</title>
 <style>body{font:16px sans-serif;max-width:1200px;margin:auto;padding:1rem}article{border:1px solid #bbb;padding:1rem;margin:1rem 0}.pair{display:flex;gap:1rem}.pair img{width:49%;object-fit:contain}code{overflow-wrap:anywhere}button{margin:.2rem}</style>
-<h1>Geographic cue review</h1><p>Compare source and generated image: road geometry, traffic side, markings, signs and text, buildings, poles, vegetation, vehicles, and other geographic cues. Reject invented or changed cues and severe artifacts; reject ambiguous cases.</p>
+<h1>Geographic cue review</h1><p>These annotations are qualitative and do not change benchmark membership. Compare source and generated image: road geometry, traffic side, markings, signs and text, buildings, poles, vegetation, vehicles, and other geographic cues. Flag invented or changed cues, severe artifacts, or ambiguous cases.</p>
 <label>Reviewer ID <input id="reviewer"></label><button id="save">Download reviews.jsonl</button><main id="items"></main>
 <script>const rows=__ROWS__, decisions={}; const container=document.getElementById('items');
 for(const row of rows){const a=document.createElement('article');

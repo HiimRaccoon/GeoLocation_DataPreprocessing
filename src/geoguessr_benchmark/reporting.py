@@ -137,7 +137,8 @@ def build_report(root):
         return "không đánh giá được" if value["mean"] is None else f'{scale * value["mean"]:.2f} ± {scale * value["std"]:.2f}'
     lines = ["# Báo cáo benchmark GeoGuessr-50k", "", "Kết quả test từ best checkpoint được chọn bằng validation. Không làm tròn trước khi tổng hợp.", "",
              f"Số lớp đầu ra: 124; lớp có support validation: {len(metadata['evaluable_ids']['val'])}; test: {len(test_ids)}.", "",
-             "## Chỉ số chính", "", "| Chỉ số | Original (%) | Augmented (%) | Chênh lệch ghép cặp (pp) |", "|---|---:|---:|---:|"]
+             "A (Original) dùng E0. B_DAFusion dùng E0 + E1 Traditional + E2 DA-Fusion.", "",
+             "## Chỉ số chính", "", "| Chỉ số | A (%) | B_DAFusion (%) | B_DAFusion − A (pp) |", "|---|---:|---:|---:|"]
     labels = {"top1_accuracy":"Top-1", "top5_accuracy":"Top-5", "macro_f1":"Macro-F1", "weighted_f1":"Weighted-F1", "macro_precision":"Macro Precision", "macro_recall":"Macro Recall"}
     for name in metric_names:
         item = aggregate["metrics"][name]

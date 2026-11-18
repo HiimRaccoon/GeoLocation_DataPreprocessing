@@ -9,13 +9,18 @@ import tempfile
 
 STAGES = ("splits", "preflight", "membership", "augmented", "initialized", "trained", "tested", "reported")
 BENCHMARK_ID = "geoguessr50k_country_augmentation_v1_2"
+AUGMENTATION_POLICY = "automatic_qc_v1"
+ACCEPTED_POOLS = {
+    method: f"augmentation/manifests/accepted_{method}.jsonl"
+    for method in ("traditional", "da_fusion")
+}
 CLEANED_DATASET = "data/cleaned_dataset"
 CLEANING_MANIFEST = "reports/cleaning_manifest.json"
 _REQUIRED = {
     "splits": {CLEANING_MANIFEST, "docs/specs.md", "reports/dataset_inventory.csv", "reports/split_audit.json", "splits/class_to_idx.json", "splits/train.csv", "splits/val.csv", "splits/test.csv", "splits/class_groups.csv", "splits/split_metadata.json"},
     "preflight": {"configs/benchmark.yaml", "augmentation/traditional/config.yaml", "augmentation/da_fusion/config.yaml", "environment.lock.txt"},
     "membership": {"augmentation/manifests/candidates.jsonl"},
-    "augmented": {"augmentation/manifests/accepted.jsonl", "augmentation/manifests/qc_summary.json", "splits/train_augmented.csv"},
+    "augmented": {"augmentation/manifests/accepted.jsonl", "augmentation/manifests/qc_summary.json", "splits/train_augmented.csv", *ACCEPTED_POOLS.values()},
     "initialized": {f"initializations/seed_{seed}.pt" for seed in (42, 123, 2026)},
     "trained": {f"runs/{condition}/seed_{seed}/best_checkpoint.pt" for condition in ("original", "augmented") for seed in (42, 123, 2026)},
     "tested": {f"runs/{condition}/seed_{seed}/predictions_test.csv" for condition in ("original", "augmented") for seed in (42, 123, 2026)},
@@ -121,14 +126,49 @@ def verify_stage(root, stage):
     current = STAGES.index(lock["stage"])
     if current < STAGES.index(stage):
         raise ValueError("required stage not published")
+    if current >= STAGES.index("membership") and lock.get("augmentation_policy") != AUGMENTATION_POLICY:
+        raise ValueError("stale augmentation lock: archive legacy T039 artifacts and refresh the split lock")
     artifacts = lock.get("artifacts")
     if not isinstance(artifacts, dict):
         raise ValueError("lock artifacts missing")
     required = set().union(*(_REQUIRED[name] for name in STAGES[:current + 1]))
     if not required.issubset(artifacts):
         raise ValueError(f"lock missing required artifacts: {sorted(required - set(artifacts))}")
+    _verify_artifacts(root, artifacts)
+    return lock
+
+
+def _verify_artifacts(root, artifacts):
     for name, expected in artifacts.items():
         path = _resolve_artifact(root, name)
         if not isinstance(expected, str) or len(expected) != 64 or not path.is_file() or sha256_file(path) != expected:
             raise ValueError(f"artifact checksum mismatch: {name}")
-    return lock
+
+
+def refresh_split_lock(root, previous_spec):
+    """Verify frozen real artifacts and bind the revised spec before a new preflight."""
+    root = Path(root).resolve()
+    lock = read_benchmark_lock(root)
+    if lock["stage"] not in ("splits", "preflight", "membership"):
+        raise ValueError("refresh requires the original split artifacts and a pre-freeze lock")
+    for name in ("augmentation/manifests", "data/augmented_dataset", "splits/train_augmented.csv"):
+        if (root / name).exists():
+            raise ValueError(f"archive stale T039 artifacts before refreshing: {name}")
+    locked_artifacts = lock.get("artifacts")
+    if not isinstance(locked_artifacts, dict) or not _REQUIRED["splits"].issubset(locked_artifacts):
+        raise ValueError("original split lock is incomplete")
+    names = _REQUIRED["splits"] | ({"data/location_metadata.csv"} & locked_artifacts.keys())
+    artifacts = {name: locked_artifacts[name] for name in names}
+    for name, field in (("splits/class_groups.csv", "initial_group_sha256"),
+                        ("splits/split_metadata.json", "initial_split_metadata_sha256")):
+        if artifacts[name] != lock.get(field):
+            raise ValueError(f"original split artifact is required: {name}")
+    spec_name = "docs/specs.md"
+    if sha256_file(root / previous_spec) != artifacts[spec_name]:
+        raise ValueError("previous spec checksum does not match the original lock")
+    _verify_artifacts(root, {name: digest for name, digest in artifacts.items() if name != spec_name})
+    artifacts[spec_name] = sha256_file(root / spec_name)
+    fields = ("schema_version", "benchmark_id", "dataset_fingerprint", "initial_group_sha256",
+              "initial_split_metadata_sha256", "group_immutable_sha256")
+    result = {**{name: lock[name] for name in fields}, "stage": "splits", "artifacts": artifacts}
+    atomic_write_bytes(root / "benchmark_lock.json", canonical_json_bytes(result))

@@ -14,7 +14,10 @@ def main(argv=None):
     verify = commands.add_parser("verify", help="verify a published stage")
     commands.add_parser("report", help="recompute a report from locked test predictions")
     commands.add_parser("augment-freeze", help="validate and freeze the augmented dataset")
-    commands.add_parser("augment", help="generate candidates until review or frozen membership")
+    augment = commands.add_parser("augment", help="generate candidates until automatic QC fills all quotas")
+    augment.add_argument("--tail-method", choices=("da_fusion", "geo_disc_ds"), default="da_fusion")
+    refresh = commands.add_parser("refresh-split-lock", help="verify and reuse frozen splits with the revised spec")
+    refresh.add_argument("--previous-spec", type=Path, required=True)
     commands.add_parser("preflight", help="probe and freeze the CUDA environment")
     commands.add_parser("init", help="freeze shared initial weights for each seed")
     commands.add_parser("train-all", help="run the six paired training jobs")
@@ -23,9 +26,9 @@ def main(argv=None):
     single = commands.add_parser("_train-run")
     single.add_argument("--condition", choices=("original", "augmented"), required=True)
     single.add_argument("--seed", type=int, choices=(42, 123, 2026), required=True)
-    review_export = commands.add_parser("review-export", help="prepare an offline diffusion review bundle")
+    review_export = commands.add_parser("review-export", help="prepare an optional qualitative diffusion review bundle")
     review_export.add_argument("--output", type=Path, required=True)
-    review_import = commands.add_parser("review-import", help="import hash-bound review decisions")
+    review_import = commands.add_parser("review-import", help="import qualitative annotations without affecting membership")
     review_import.add_argument("--input", type=Path, required=True)
     from .artifacts import STAGES
     verify.add_argument("--stage", choices=STAGES, required=True)
@@ -51,9 +54,12 @@ def main(argv=None):
             freeze_augmented(args.root)
         elif args.command == "augment":
             from .augmentation.workflow import generate_offline
-            state = generate_offline(args.root)
+            state = generate_offline(args.root, tail_method=args.tail_method)
             print(f"augment: {state}")
             return 0
+        elif args.command == "refresh-split-lock":
+            from .artifacts import refresh_split_lock
+            refresh_split_lock(args.root, args.previous_spec)
         elif args.command == "preflight":
             from .preflight import run_preflight
             run_preflight(args.root)

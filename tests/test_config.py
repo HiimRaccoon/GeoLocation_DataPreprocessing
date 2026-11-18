@@ -41,6 +41,11 @@ def test_config_does_not_prematurely_materialize_batch(tmp_path):
     config = load_config(tmp_path)
     assert config["benchmark"]["batch_size_preferred"] == 128
     assert config["benchmark"].get("batch_size_effective") is None
+    assert config["benchmark"]["conditions"] == ["original", "augmented"]
+    assert config["benchmark"]["training_seeds"] == [42, 123, 2026]
+    assert config["benchmark"]["components"] == {
+        "E0": "original", "E1": "traditional", "E2": "da_fusion", "E3": "geo_disc_ds",
+    }
 
 
 def test_qc_thresholds_are_explicit_and_frozen(tmp_path):

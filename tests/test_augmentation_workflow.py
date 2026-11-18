@@ -6,10 +6,9 @@ import numpy as np
 from PIL import Image
 import pytest
 
-from geoguessr_benchmark.artifacts import _REQUIRED, atomic_write_bytes, canonical_json_bytes, canonical_jsonl_bytes, sha256_file, verify_stage
+from geoguessr_benchmark.artifacts import AUGMENTATION_POLICY, _REQUIRED, atomic_write_bytes, canonical_json_bytes, canonical_jsonl_bytes, sha256_file, verify_stage
 from geoguessr_benchmark.images import decode_rgb, pixel_sha256
 from geoguessr_benchmark.augmentation.diffusion import native_generation_geometry
-from geoguessr_benchmark.augmentation.review import RUBRIC
 from geoguessr_benchmark.augmentation.policy import plan_candidate
 from geoguessr_benchmark.augmentation.diagnostics import membership_sha256
 from geoguessr_benchmark.augmentation.workflow import freeze_augmented
@@ -30,7 +29,7 @@ def test_freeze_checks_dino_membership_then_publishes_union(tmp_path, monkeypatc
     with (tmp_path / "splits/class_groups.csv").open(encoding="utf-8",newline="") as file:
         group = list(csv.DictReader(file))[0]
     rng = np.random.default_rng(11)
-    candidates, decisions = [], []
+    candidates = []
     for i in range(int(group["required_accepted"])):
         attempt = plan_candidate("da_fusion", 0, i, train)
         src = next(r for r in train if r["image_id"] == attempt["source_image_id"])
@@ -41,12 +40,9 @@ def test_freeze_checks_dino_membership_then_publishes_union(tmp_path, monkeypatc
         output.parent.mkdir(parents=True,exist_ok=True)
         Image.fromarray(rng.integers(0,256,(original.height, original.width,3),dtype=np.uint8)).save(output,quality=95,subsampling=0)
         candidate = dict(attempt, **geometry, synthetic_path=name, source_sha256=src["sha256"], class_name="A", method_variant="sd15_img2img_fixed", accepted=True, filter_status="accepted", safety_flag=False, output_sha256=sha256_file(output), output_pixel_sha256=pixel_sha256(decode_rgb(output)))
-        candidate.update({"reviewer_id":"reviewer","review_timestamp":"2026-11-14T00:00:00Z","review_rubric_version":RUBRIC,"review_reason":None})
         candidates.append(candidate)
-        decisions.append({"synthetic_id":candidate["synthetic_id"], "source_sha256":candidate["source_sha256"], "output_sha256":candidate["output_sha256"], "reviewer_id":"reviewer", "review_timestamp":"2026-11-14T00:00:00Z", "rubric_version":RUBRIC, "decision":"accept", "reason":None})
     candidates_path=tmp_path/"augmentation/manifests/candidates.jsonl"
     atomic_write_bytes(candidates_path,canonical_jsonl_bytes(candidates))
-    atomic_write_bytes(tmp_path/"augmentation/manifests/reviews.jsonl",canonical_jsonl_bytes(decisions))
     lock=json.loads((tmp_path/"benchmark_lock.json").read_text(encoding="utf-8"))
     for stage in ("preflight","membership"):
         for path in _REQUIRED[stage]:
@@ -60,8 +56,8 @@ def test_freeze_checks_dino_membership_then_publishes_union(tmp_path, monkeypatc
     lock["artifacts"]["augmentation/manifests/candidates.jsonl"]=sha256_file(candidates_path)
     lock["model_snapshot"]={"sd_revision":"a"*40}
     lock["diffusion_probe"]={"weights_sha256":"b"*64,"scheduler_config":{"x":1},"actual_timesteps":[9,8]}
-    lock["artifacts"]["augmentation/manifests/reviews.jsonl"] = sha256_file(tmp_path/"augmentation/manifests/reviews.jsonl")
-    lock.update({"stage":"membership","membership_sha256":membership_sha256(candidates)})
+    lock.update(stage="membership", augmentation_policy=AUGMENTATION_POLICY,
+                membership_sha256=membership_sha256(candidates))
     atomic_write_bytes(tmp_path/"benchmark_lock.json",canonical_json_bytes(lock))
     import geoguessr_benchmark.augmentation.workflow as workflow
     monkeypatch.setattr(workflow,"load_config",lambda root:{"traditional":{},"da_fusion":DIFF_CONFIG})
@@ -126,14 +122,11 @@ def test_dino_may_only_add_diagnostic_fields(tmp_path):
         validate_dino_changes(before, after)
 
 
-def test_augment_resume_from_offline_review_to_membership(tmp_path, monkeypatch):
+def test_augment_resumes_automatic_qc_and_rejects_legacy_history(tmp_path, monkeypatch):
     import geoguessr_benchmark.augmentation.workflow as workflow
     import geoguessr_benchmark.preflight as preflight
-    import geoguessr_benchmark.config as config_module
-    monkeypatch.setattr(preflight,"verify_runtime",lambda root,lock:None)
-    from geoguessr_benchmark.augmentation.review import export_review_queue, import_review_decisions
+    monkeypatch.setattr(preflight, "verify_runtime", lambda root, lock: None)
     from geoguessr_benchmark.__main__ import main
-    from test_qc import setup_fixture
     setup_fixture(tmp_path)
     lock=json.loads((tmp_path/"benchmark_lock.json").read_text(encoding="utf-8"))
     for path in _REQUIRED["preflight"]:
@@ -142,37 +135,41 @@ def test_augment_resume_from_offline_review_to_membership(tmp_path, monkeypatch)
     lock.update({"stage":"preflight","model_snapshot":{"sd_revision":"a"*40},"diffusion_probe":{"weights_sha256":"b"*64,"scheduler_config":{"x":1},"actual_timesteps":[9,8]}})
     atomic_write_bytes(tmp_path/"benchmark_lock.json",canonical_json_bytes(lock))
     monkeypatch.setattr(workflow,"load_config",lambda root:{"benchmark":{},"traditional":{},"da_fusion":DIFF_CONFIG})
-    monkeypatch.setattr(config_module,"load_config",lambda root:{"benchmark":{},"traditional":{},"da_fusion":DIFF_CONFIG})
     monkeypatch.setattr(workflow,"load_pinned_diffusion",lambda root,snapshot:object())
+    calls = []
     def fake_generate(source, attempt, config, snapshot):
+        index = attempt["attempt_index"]
+        calls.append(index)
+        if calls == [0, 1, 2]:
+            raise OSError("interrupted generation")
         g=native_generation_geometry(*source.size)
         rng=np.random.default_rng(attempt["generation_seed"])
         img=Image.fromarray(rng.integers(0,256,(source.height,source.width,3),dtype=np.uint8))
-        return img, {**fixture_provenance(attempt["class_name"]), **g, "safety_flag":False}
-    monkeypatch.setattr(workflow,"generate_diffusion",fake_generate)
-    assert main(["--root",str(tmp_path),"augment"]) == 0
-    candidates_path=tmp_path/"augmentation/manifests/candidates.jsonl"
-    pending=[json.loads(line) for line in candidates_path.read_text(encoding="utf-8").splitlines()]
-    assert len(pending)==8 and all(row["filter_status"]=="pending" for row in pending)
-    assert main(["--root",str(tmp_path),"review-export","--output","augmentation/manifests/review_queue.jsonl"]) == 0
-    queue=[json.loads(line) for line in (tmp_path/"augmentation/manifests/review_queue.jsonl").read_text(encoding="utf-8").splitlines()]
-    decisions=[{"synthetic_id":r["synthetic_id"],"source_sha256":r["source_sha256"],"output_sha256":r["output_sha256"],"reviewer_id":"reviewer","review_timestamp":"2026-11-14T00:00:00Z","rubric_version":r["rubric_version"],"decision":"accept","reason":None} for r in queue]
-    review_input=tmp_path/"decisions.jsonl"
-    atomic_write_bytes(review_input,canonical_jsonl_bytes([decisions[-1]]))
-    assert main(["--root",str(tmp_path),"review-import","--input",str(review_input)]) == 0
-    assert main(["--root",str(tmp_path),"augment"]) == 0
-    still_pending=[json.loads(line) for line in candidates_path.read_text(encoding="utf-8").splitlines()]
-    assert all(row["filter_status"] == "pending" for row in still_pending)
-    atomic_write_bytes(review_input,canonical_jsonl_bytes(decisions))
-    assert main(["--root",str(tmp_path),"review-import","--input",str(review_input)]) == 0
-    assert main(["--root",str(tmp_path),"augment"]) == 0
-    lock=verify_stage(tmp_path,"membership")
-    assert lock["stage"] == "membership"
-    final=[json.loads(line) for line in candidates_path.read_text(encoding="utf-8").splitlines()]
-    assert all(r["accepted"] for r in final) and len(final)==8
+        return img, {**fixture_provenance(attempt["class_name"]), **g, "safety_flag": index == 0}
+    monkeypatch.setattr(workflow, "generate_diffusion", fake_generate)
+    args = ["--root", str(tmp_path), "augment"]
+    candidates_path = tmp_path / "augmentation/manifests/candidates.jsonl"
+    legacy = canonical_jsonl_bytes([{"benchmark_id":lock["benchmark_id"], "filter_status":"pending"}])
+    atomic_write_bytes(candidates_path, legacy)
+    assert main(args) == 1
+    assert candidates_path.read_bytes() == legacy and calls == []
+    candidates_path.rename(tmp_path / "legacy.jsonl")
+
+    assert main(args) == 1
+    first = workflow._jsonl(candidates_path)
+    assert [row["filter_status"] for row in first] == ["rejected", "accepted"]
+    assert verify_stage(tmp_path, "preflight")["stage"] == "preflight"
+    assert not (tmp_path / "augmentation/manifests/reviews.jsonl").exists()
+
+    atomic_write_bytes(tmp_path / "augmentation/manifests/reviews.jsonl", b"not read by generation")
+    assert main(args) == 0
+    final = workflow._jsonl(candidates_path)
+    assert final[:2] == first
+    assert calls == [0, 1, 2, *range(2, 9)]
+    assert len(final) == 9 and sum(row["accepted"] for row in final) == 8
+    lock = verify_stage(tmp_path, "membership")
     assert membership_sha256(final) == lock["membership_sha256"]
-
-
+    assert "augmentation/manifests/reviews.jsonl" not in lock["artifacts"]
 def test_augment_records_holdout_incident_and_attempt(tmp_path, monkeypatch):
     import geoguessr_benchmark.augmentation.workflow as workflow
     import geoguessr_benchmark.preflight as preflight
@@ -195,15 +192,6 @@ def test_augment_records_holdout_incident_and_attempt(tmp_path, monkeypatch):
     assert len(rows)==1 and rows[0]["rejection_reason"]=="exact_duplicate"
 
 
-def test_review_binding_requires_matching_metadata_and_utc_timestamp():
-    from geoguessr_benchmark.augmentation.workflow import validate_review_binding
-    row={"source_sha256":"s","output_sha256":"o","reviewer_id":"r","review_timestamp":"2026-11-14T00:00:00Z","review_rubric_version":RUBRIC,"review_reason":None}
-    review={"source_sha256":"s","output_sha256":"o","reviewer_id":"r","review_timestamp":"2026-11-14T00:00:00Z","rubric_version":RUBRIC,"decision":"accept","reason":None}
-    assert validate_review_binding(row,review)
-    assert not validate_review_binding(dict(row,reviewer_id="other"),review)
-    assert not validate_review_binding(dict(row,review_timestamp="2026-11-14T00:00:00"),dict(review,review_timestamp="2026-11-14T00:00:00"))
-
-
 def test_holdout_collision_stops_before_dino_diagnostics(tmp_path,monkeypatch):
     import geoguessr_benchmark.augmentation.workflow as workflow
     source,candidate=setup_fixture(tmp_path)
@@ -218,7 +206,8 @@ def test_holdout_collision_stops_before_dino_diagnostics(tmp_path,monkeypatch):
         for name in _REQUIRED[stage]:
             if not (tmp_path/name).exists(): atomic_write_bytes(tmp_path/name,b"fixture")
             lock["artifacts"][name]=sha256_file(tmp_path/name)
-    lock.update({"stage":"membership","membership_sha256":membership_sha256([candidate])})
+    lock.update(stage="membership", augmentation_policy=AUGMENTATION_POLICY,
+                membership_sha256=membership_sha256([candidate]))
     atomic_write_bytes(tmp_path/"benchmark_lock.json",canonical_json_bytes(lock))
     called=[]
     monkeypatch.setattr(workflow,"log_dino_diagnostics",lambda root:called.append(True))

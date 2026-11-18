@@ -3,6 +3,12 @@ import pytest
 from geoguessr_benchmark.__main__ import main
 
 
+def test_geo_disc_ds_is_recognized_but_not_runnable(tmp_path, capsys):
+    assert main(["--root", str(tmp_path), "augment", "--tail-method", "geo_disc_ds"]) == 1
+    assert "geo_disc_ds is not implemented" in capsys.readouterr().err
+    assert not list(tmp_path.iterdir())
+
+
 @pytest.mark.parametrize("command", [
     ["preflight"], ["augment"], ["augment-freeze"],
     ["review-export", "--output", "augmentation/manifests/review_queue.jsonl"],

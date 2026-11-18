@@ -26,7 +26,7 @@ def test_predictions_validate_ids_labels_and_full_top5_order():
 
 def test_loading_test_predictions_requires_tested_lock_and_checks_hashes(tmp_path):
     import csv
-    from geoguessr_benchmark.artifacts import _REQUIRED, STAGES, BENCHMARK_ID, atomic_write_bytes, canonical_json_bytes, sha256_file
+    from geoguessr_benchmark.artifacts import AUGMENTATION_POLICY, _REQUIRED, STAGES, BENCHMARK_ID, atomic_write_bytes, canonical_json_bytes, sha256_file
     from geoguessr_benchmark.evaluate import load_test_predictions
     paths = set().union(*(_REQUIRED[stage] for stage in STAGES[:STAGES.index("trained")+1]))
     for relative in paths:
@@ -34,7 +34,7 @@ def test_loading_test_predictions_requires_tested_lock_and_checks_hashes(tmp_pat
     test_csv = b"image_id,class_id,split,is_synthetic\na,3,test,false\n"
     atomic_write_bytes(tmp_path / "splits/test.csv", test_csv)
     artifacts = {name: sha256_file(tmp_path / name) for name in paths}
-    lock = {"schema_version":1,"benchmark_id":BENCHMARK_ID,"stage":"trained","artifacts":artifacts}
+    lock = {"schema_version":1,"benchmark_id":BENCHMARK_ID,"stage":"trained","augmentation_policy":AUGMENTATION_POLICY,"artifacts":artifacts}
     atomic_write_bytes(tmp_path / "benchmark_lock.json", canonical_json_bytes(lock))
     with pytest.raises(ValueError):
         load_test_predictions(tmp_path, "original", 42)
@@ -62,7 +62,7 @@ def test_loading_test_predictions_requires_tested_lock_and_checks_hashes(tmp_pat
 def test_final_evaluation_is_gated_and_reuses_locked_predictions_after_failure(tmp_path, monkeypatch):
     import json
     import geoguessr_benchmark.evaluate as evaluation
-    from geoguessr_benchmark.artifacts import _REQUIRED, STAGES, BENCHMARK_ID, atomic_write_bytes, canonical_json_bytes, sha256_file, verify_stage
+    from geoguessr_benchmark.artifacts import AUGMENTATION_POLICY, _REQUIRED, STAGES, BENCHMARK_ID, atomic_write_bytes, canonical_json_bytes, sha256_file, verify_stage
     paths=set().union(*(_REQUIRED[s] for s in STAGES[:STAGES.index("trained")+1]))
     for name in paths: atomic_write_bytes(tmp_path/name,b"fixture")
     atomic_write_bytes(tmp_path/"splits/test.csv",b"image_id,class_id,split,is_synthetic\na,0,test,false\n")
@@ -77,7 +77,7 @@ def test_final_evaluation_is_gated_and_reuses_locked_predictions_after_failure(t
                 atomic_write_bytes(tmp_path/name,canonical_json_bytes(value))
                 paths.add(name)
     artifacts={name:sha256_file(tmp_path/name) for name in paths}
-    lock={"schema_version":1,"benchmark_id":BENCHMARK_ID,"stage":"initialized","artifacts":artifacts}
+    lock={"schema_version":1,"benchmark_id":BENCHMARK_ID,"stage":"initialized","augmentation_policy":AUGMENTATION_POLICY,"artifacts":artifacts}
     atomic_write_bytes(tmp_path/"benchmark_lock.json",canonical_json_bytes(lock))
     calls=[]
     def infer(root,condition,seed,lock,manifest):

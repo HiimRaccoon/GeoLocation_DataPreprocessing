@@ -3,7 +3,7 @@ import json
 import pytest
 import torch
 
-from geoguessr_benchmark.artifacts import _REQUIRED, STAGES, BENCHMARK_ID, atomic_write_bytes, canonical_csv_bytes, canonical_json_bytes, sha256_file, verify_stage
+from geoguessr_benchmark.artifacts import AUGMENTATION_POLICY, _REQUIRED, STAGES, BENCHMARK_ID, atomic_write_bytes, canonical_csv_bytes, canonical_json_bytes, sha256_file, verify_stage
 from geoguessr_benchmark.experiment import freeze_checkpoints
 
 
@@ -21,7 +21,7 @@ def test_freeze_requires_six_complete_runs_and_locked_best(tmp_path):
     for seed in (42,123,2026):
         torch.save({"weight":torch.tensor([1.0])},tmp_path/f"initializations/seed_{seed}.pt")
     artifacts={name:sha256_file(tmp_path/name) for name in paths}
-    lock={"schema_version":1,"benchmark_id":BENCHMARK_ID,"stage":"initialized","artifacts":artifacts}
+    lock={"schema_version":1,"benchmark_id":BENCHMARK_ID,"stage":"initialized","augmentation_policy":AUGMENTATION_POLICY,"artifacts":artifacts}
     atomic_write_bytes(tmp_path/"benchmark_lock.json",canonical_json_bytes(lock))
     for condition in ("original","augmented"):
         for seed in (42,123,2026):

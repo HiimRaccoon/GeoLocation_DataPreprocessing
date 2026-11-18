@@ -14,7 +14,7 @@ def review_candidate(root, candidate, letter):
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(root / candidate["synthetic_path"], target)
     candidate.update({"synthetic_id":sid, "synthetic_path":relative, "attempt_index":0,
-                      "augmentation_type":"da_fusion", "filter_status":"pending", "qc_passed":True})
+                      "augmentation_type":"da_fusion", "filter_status":"accepted", "qc_passed":True, "accepted":True})
 
 
 def test_review_bundle_roundtrip_checks_image_hashes(tmp_path):

@@ -15,7 +15,7 @@ from geoguessr_benchmark.augmentation.diffusion import native_generation_geometr
 from geoguessr_benchmark.cleaning import HUD_BOXES
 
 
-def test_complete_fixture_workflow_with_review_resume_and_test_gate(tmp_path, monkeypatch):
+def test_complete_fixture_workflow_with_automatic_qc_and_test_gate(tmp_path, monkeypatch):
     import subprocess
     import geoguessr_benchmark.inventory as inventory
     import geoguessr_benchmark.split as split
@@ -37,20 +37,20 @@ def test_complete_fixture_workflow_with_review_resume_and_test_gate(tmp_path, mo
     for class_id in range(124):
         directory=root/"data/compressed_dataset"/f"C{class_id:03d}"
         directory.mkdir(parents=True)
-        for index in range(4 if class_id==0 else 1):
+        for index in range({0: 4, 1: 5}.get(class_id, 1)):
             pixels=rng.integers(0,256,(40,60,3),dtype=np.uint8)
             Image.fromarray(pixels).save(directory/f"{index}.jpg",quality=95)
-    monkeypatch.setattr(inventory,"DEFAULT_BASELINE",{"images":127,"classes":124})
+    monkeypatch.setattr(inventory,"DEFAULT_BASELINE",{"images":131,"classes":124})
     # Fixture-only budgets keep this smoke test small; production group boundaries
     # are tested independently and the standard policy remains unchanged.
-    monkeypatch.setattr(split,"group_for_count",lambda n:("tail",4,2) if n==2 else ("tail",1,0))
+    monkeypatch.setattr(split, "group_for_count", lambda n: {1: ("many", 1, 0), 2: ("tail", 4, 2), 3: ("medium", 4, 1)}[n])
     monkeypatch.setitem(HUD_BOXES, (60, 40), ((41, 1, 57, 5), (42, 25, 57, 36)))
     assert main(["--root",str(root),"clean"]) == 0
     assert main(["--root",str(root),"inventory"]) == 0
     assert main(["--root",str(root),"split"]) == 0
     split_audit = json.loads((root/"reports/split_audit.json").read_text(encoding="utf-8"))
-    assert split_audit["split_counts"] == {"train": 125, "val": 1, "test": 1}
-    assert split_audit["split_support"] == {"train": 124, "val": 1, "test": 1}
+    assert split_audit["split_counts"] == {"train": 127, "val": 2, "test": 2}
+    assert split_audit["split_support"] == {"train": 124, "val": 2, "test": 2}
     assert split_audit["cross_split_duplicates"] == []
     assert main(["--root",str(root),"test-all"]) == 1
     original=(root/"splits/test.csv").read_bytes()
@@ -82,19 +82,10 @@ def test_complete_fixture_workflow_with_review_resume_and_test_gate(tmp_path, mo
             "eta":config["eta"],"precision":"float32","actual_timesteps":[1]}
     monkeypatch.setattr(workflow,"generate_diffusion",generate)
     assert main(["--root",str(root),"augment"]) == 0
-    assert main(["--root",str(root),"review-export","--output","augmentation/manifests/review_queue.jsonl"]) == 0
-    queue=[json.loads(line) for line in (root/"augmentation/manifests/review_queue.jsonl").read_text(encoding="utf-8").splitlines()]
-    assert len(queue)==2
-    for row in queue:
-        source = root / row["source_image_path"]
-        raw = root / "data/compressed_dataset" / source.relative_to(root / "data/cleaned_dataset")
-        copied = root / "augmentation/review/sources" / f'{row["synthetic_id"]}.jpg'
-        assert copied.read_bytes() == source.read_bytes() != raw.read_bytes()
-    decisions=[{"synthetic_id":row["synthetic_id"],"source_sha256":row["source_sha256"],"output_sha256":row["output_sha256"],
-                "reviewer_id":"fixture","review_timestamp":"2026-11-14T00:00:00Z","rubric_version":row["rubric_version"],"decision":"accept","reason":None} for row in queue]
-    atomic_write_bytes(root/"reviews.jsonl",canonical_jsonl_bytes(decisions))
-    assert main(["--root",str(root),"review-import","--input","reviews.jsonl"]) == 0
-    assert main(["--root",str(root),"augment"]) == 0
+    assert not (root / "augmentation/manifests/reviews.jsonl").exists()
+    source_manifest = (root / "splits/train.csv").read_bytes()
+    holdout_manifests = {name: (root / f"splits/{name}.csv").read_bytes() for name in ("val", "test")}
+    atomic_write_bytes(root / "augmentation/manifests/reviews.jsonl", b"optional review must not affect freeze")
     assert verify_stage(root,"membership")["stage"]=="membership"
     def diagnostics(root):
         assert verify_stage(root, "membership")["stage"] == "membership"
@@ -109,7 +100,26 @@ def test_complete_fixture_workflow_with_review_resume_and_test_gate(tmp_path, mo
         return rows
     monkeypatch.setattr(workflow,"log_dino_diagnostics",diagnostics)
     assert main(["--root",str(root),"augment-freeze"]) == 0
-    assert verify_stage(root,"augmented")["stage"]=="augmented"
+    lock = verify_stage(root, "augmented")
+    manifests = root / "augmentation/manifests"
+    def csv_rows(path):
+        return list(csv.DictReader(path.read_text(encoding="utf-8").splitlines()))
+    accepted = workflow._jsonl(manifests / "accepted.jsonl")
+    assert lock["membership_sha256"] == workflow.membership_sha256(accepted)
+    assert len(accepted) == 3
+    e1 = workflow._jsonl(manifests / "accepted_traditional.jsonl")
+    e2 = workflow._jsonl(manifests / "accepted_da_fusion.jsonl")
+    assert e1 + e2 == accepted
+    assert len(e1) == 1 and all(row["class_id"] == 1 for row in e1)
+    assert len(e2) == 2 and all(row["class_id"] == 0 for row in e2)
+    assert (root / "splits/train.csv").read_bytes() == source_manifest
+    assert all((root / f"splits/{name}.csv").read_bytes() == payload for name, payload in holdout_manifests.items())
+    union = csv_rows(root / "splits/train_augmented.csv")
+    assert [row for row in union if row["is_synthetic"] == "false"] == csv_rows(root / "splits/train.csv")
+    synthetic = {row["image_id"]: row for row in union if row["is_synthetic"] == "true"}
+    assert set(synthetic) == {row["synthetic_id"] for row in accepted}
+    assert all(row["split"] == "train" for row in synthetic.values())
+    assert all(row["is_synthetic"] == "false" for name in ("val", "test") for row in csv_rows(root / f"splits/{name}.csv"))
 
     monkeypatch.setattr(classifier,"build_model",lambda path:torch.nn.Sequential(torch.nn.Flatten(),torch.nn.Linear(3,124)))
     def classifier_input(path):

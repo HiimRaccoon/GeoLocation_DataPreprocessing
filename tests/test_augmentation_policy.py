@@ -19,6 +19,9 @@ def test_seed_and_round_robin_are_stable():
     sources[0].update(split="train", filepath="data/compressed_dataset/A/b.jpg")
     with pytest.raises(ValueError, match="cleaned"):
         plan_candidate("traditional", 7, 0, sources)
+    sources[0].update(filepath="data/cleaned_dataset/A/b.jpg", is_synthetic="true")
+    with pytest.raises(ValueError, match="original train"):
+        plan_candidate("da_fusion", 7, 0, sources)
 
 
 def test_planning_respects_group_budget_attempt_cap_and_resume():

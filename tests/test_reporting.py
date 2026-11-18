@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from geoguessr_benchmark.artifacts import _REQUIRED, STAGES, BENCHMARK_ID, atomic_write_bytes, canonical_json_bytes, sha256_file, verify_stage
+from geoguessr_benchmark.artifacts import AUGMENTATION_POLICY, _REQUIRED, STAGES, BENCHMARK_ID, atomic_write_bytes, canonical_json_bytes, sha256_file, verify_stage
 from geoguessr_benchmark.reporting import build_report
 
 
@@ -32,7 +32,7 @@ def test_report_recomputes_six_locked_predictions_and_preserves_null_groups(tmp_
             atomic_write_bytes(tmp_path / metadata, canonical_json_bytes({"condition":condition,"seed":seed,"duration_seconds":10,"epochs_completed":20,"optimizer_steps":20,"selected_epoch":1,"batch_size":16,"train_count":1,"original_count":1,"synthetic_count":0,"failure_history":[]}))
             paths.add(metadata)
     artifacts = {name:sha256_file(tmp_path / name) for name in paths}
-    lock = {"schema_version":1,"benchmark_id":BENCHMARK_ID,"stage":"tested","artifacts":artifacts,
+    lock = {"schema_version":1,"benchmark_id":BENCHMARK_ID,"stage":"tested","augmentation_policy":AUGMENTATION_POLICY,"artifacts":artifacts,
             "test_prediction_inputs":{f"{condition}/seed_{seed}":{"checkpoint_sha256":artifacts[f"runs/{condition}/seed_{seed}/best_checkpoint.pt"], "test_manifest_sha256":artifacts["splits/test.csv"], "config_sha256":artifacts["configs/benchmark.yaml"]} for condition in ("original","augmented") for seed in (42,123,2026)}}
     atomic_write_bytes(tmp_path / "benchmark_lock.json", canonical_json_bytes(lock))
     build_report(tmp_path)

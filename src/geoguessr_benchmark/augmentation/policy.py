@@ -1,6 +1,6 @@
 """Deterministic candidate identities, seeds and train-only source ordering."""
 import hashlib
-from ..artifacts import BENCHMARK_ID, CLEANED_DATASET
+from ..artifacts import AUGMENTATION_POLICY, BENCHMARK_ID, CLEANED_DATASET
 
 
 def plan_candidate(augmentation_type, class_id, attempt_index, sources):
@@ -20,7 +20,8 @@ def plan_candidate(augmentation_type, class_id, attempt_index, sources):
     source = sources[attempt_index % len(sources)]
     seed_bytes = hashlib.sha256(f"aug-v1|314159|{augmentation_type}|{class_id}|{attempt_index}".encode()).digest()
     identifier = hashlib.sha256(f"{BENCHMARK_ID}|{augmentation_type}|{class_id}|{attempt_index}".encode()).hexdigest()
-    return {"benchmark_id": BENCHMARK_ID, "synthetic_id": identifier, "augmentation_type": augmentation_type, "class_id": class_id,
+    return {"benchmark_id": BENCHMARK_ID, "augmentation_policy": AUGMENTATION_POLICY,
+            "synthetic_id": identifier, "augmentation_type": augmentation_type, "class_id": class_id,
             "attempt_index": attempt_index, "generation_seed": int.from_bytes(seed_bytes[:4], "big"),
             "source_image_id": source["image_id"], "source_image_path": source["filepath"], "source_split": "train"}
 
@@ -44,8 +45,6 @@ def next_candidate(group, sources, attempts):
         if any(attempt.get(key) != value for key, value in expected.items()):
             raise ValueError("invalid candidate history")
         status, flag = attempt.get("filter_status"), attempt.get("accepted")
-        if status == "pending" and flag is False:
-            raise ValueError("review_required")
         if status not in ("accepted", "rejected") or flag is not (status == "accepted"):
             raise ValueError("invalid candidate status")
         accepted += status == "accepted"

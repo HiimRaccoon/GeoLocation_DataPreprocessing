@@ -1,4 +1,4 @@
-"""Automatic checks on final JPEGs; human review remains a separate gate."""
+"""Automatic acceptance checks on final JPEGs."""
 import csv
 from pathlib import Path
 

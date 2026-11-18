@@ -3,8 +3,11 @@ from pathlib import Path
 import yaml
 from .artifacts import BENCHMARK_ID
 
+COMPONENTS = {"E0": "original", "E1": "traditional", "E2": "da_fusion", "E3": "geo_disc_ds"}
+
 _BENCHMARK = {
     "benchmark_id": BENCHMARK_ID, "conditions": ["original", "augmented"],
+    "components": COMPONENTS,
     "model": "efficientnet_b0", "weights": "IMAGENET1K_V1", "num_classes": 124,
     "input_width": 384, "input_height": 160, "optimizer": "AdamW", "learning_rate": 0.0003,
     "weight_decay": 0.0001, "betas": [0.9, 0.999], "eps": 1e-8, "epochs": 20,
